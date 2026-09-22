@@ -70,6 +70,10 @@ function publicUser(u) {
   return u && { id: u.id, role: u.role, name: u.name, email: u.email, phone: u.phone, city: u.city };
 }
 
+// Behind a hosting proxy (Render, Railway, Nginx) the real client address is in X-Forwarded-For.
+const clientIp = (req) => (process.env.TRUST_PROXY === '1' && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim())
+  || req.socket.remoteAddress;
+
 export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path.join(ROOT, 'uploads'), dbFile, secureCookies = false } = {}) {
   const db = openDb(dbFile || path.join(dataDir, 'baitulaqba.db'));
   fs.mkdirSync(uploadsDir, { recursive: true });
@@ -146,6 +150,8 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
       officialAccounts: s.officialAccounts,
     };
   });
+
+  r.get('/api/health', () => ({ ok: true }));
 
   r.post('/api/auth/login', (ctx) => {
     const { login, password, role } = ctx.body;
@@ -638,7 +644,7 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
       if (!match) fail(404, 'Not found');
       const ctx = {
         req, res, params: match.params, query: url.searchParams, body: {}, files: {},
-        user: auth.currentUser(req), ip: req.socket.remoteAddress,
+        user: auth.currentUser(req), ip: clientIp(req),
       };
       if (!['GET', 'HEAD'].includes(req.method)) {
         // CSRF: session cookie is SameSite=Strict; additionally require a same-origin request.

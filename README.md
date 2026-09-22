@@ -74,12 +74,16 @@ current-month rules.
 
 ## Deployment notes
 
+Step-by-step hosting guide (Render one-click blueprint, or your own server with Docker): **[DEPLOY.md](DEPLOY.md)**.
+
+
 - Data is stored in `data/baitulaqba.db` and receipt images in `uploads/`. **Back up both folders.**
   Change these locations with `DATA_DIR` and `UPLOADS_DIR`.
 - Other environment variables: `PORT` (default 3000), `HOST`, `SESSION_SECRET` (otherwise generated and saved in `data/`),
-  and `SECURE_COOKIES=1` when served over HTTPS.
+  `SECURE_COOKIES=1` when served over HTTPS, and `TRUST_PROXY=1` behind a hosting proxy.
 - Put it behind HTTPS (e.g. Nginx or Caddy as a reverse proxy) before giving donors the link.
 - Keep it running with a process manager such as `pm2`, `systemd`, or your host's Node app runner.
+- Donors can add `/donor` to their phone's home screen; it opens like an app (web app manifest + icons are included).
 
 ## Development
 

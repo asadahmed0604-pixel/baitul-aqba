@@ -1,0 +1,23 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# Creates one web service with a persistent disk for the database and receipt images.
+services:
+  - type: web
+    name: baitul-aqba
+    runtime: docker
+    plan: starter            # persistent disks need a paid plan
+    healthCheckPath: /api/health
+    envVars:
+      - key: SECURE_COOKIES
+        value: "1"
+      - key: TRUST_PROXY
+        value: "1"
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: ADMIN_EMAIL
+        sync: false          # you are asked for these once, when creating the service
+      - key: ADMIN_PASSWORD
+        sync: false
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 5
