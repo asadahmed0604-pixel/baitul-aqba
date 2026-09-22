@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bait ul Aqba Donations</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/"><span class="brand-mark">ب</span><span id="fname">Bait ul Aqba</span></a>
+  </header>
+  <main class="hero">
+    <h1>Orphan sponsorship donations</h1>
+    <p class="muted">Donors submit their monthly receipts here. The foundation's management team reviews each one and tracks every orphan's sponsorship month by month.</p>
+    <div class="portal-cards">
+      <a class="portal-card" href="/donor">
+        <div class="ico">🤲</div>
+        <h2>Donor portal</h2>
+        <p class="muted">Submit your monthly or advance donation with your bank receipt.</p>
+        <ul>
+          <li>Enter a payment against your orphan number(s)</li>
+          <li>Pay for one month or several months in advance</li>
+          <li>Upload the receipt; the details are read automatically</li>
+          <li>Track the status of every entry</li>
+        </ul>
+      </a>
+      <a class="portal-card" href="/admin">
+        <div class="ico">📊</div>
+        <h2>Foundation management</h2>
+        <p class="muted">Review, verify and report on all donations.</p>
+        <ul>
+          <li>Verify receipts and check beneficiary accounts</li>
+          <li>Weekly and monthly reports</li>
+          <li>Month-by-month coverage for every orphan</li>
+          <li>Import and export data (Excel / CSV)</li>
+        </ul>
+      </a>
+    </div>
+  </main>
+  <script type="module">
+    import { getConfig } from '/js/common.js';
+    getConfig().then((c) => { document.getElementById('fname').textContent = c.foundationName; document.title = `${c.foundationName} Donations`; }).catch(() => {});
+  </script>
+</body>
+</html>

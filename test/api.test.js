@@ -1,0 +1,259 @@
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createApp } from '../src/app.js';
+import { todayIn, addMonths } from '../public/shared/receipt-parser.js';
+
+const today = todayIn('Asia/Karachi');
+const month = today.slice(0, 7);
+const lastMonth = addMonths(month, -1);
+const nextMonth = addMonths(month, 1);
+
+let app, base, dir;
+
+function png(width, height, salt = '') {
+  const b = Buffer.alloc(33);
+  b.writeUInt32BE(0x89504e47, 0);
+  b.writeUInt32BE(0x0d0a1a0a, 4);
+  b.writeUInt32BE(13, 8);
+  b.write('IHDR', 12);
+  b.writeUInt32BE(width, 16);
+  b.writeUInt32BE(height, 20);
+  return Buffer.concat([b, Buffer.from(salt)]);
+}
+
+class Client {
+  constructor() { this.cookie = ''; }
+  async req(method, url, body, { form } = {}) {
+    const headers = {};
+    if (this.cookie) headers.cookie = this.cookie;
+    let payload;
+    if (form) payload = form;
+    else if (body !== undefined) { headers['content-type'] = 'application/json'; payload = JSON.stringify(body); }
+    const res = await fetch(base + url, { method, headers, body: payload });
+    const set = res.headers.get('set-cookie');
+    if (set) this.cookie = set.split(';')[0];
+    const type = res.headers.get('content-type') || '';
+    const data = type.includes('json') ? await res.json() : await res.text();
+    return { status: res.status, data };
+  }
+  get(u) { return this.req('GET', u); }
+  post(u, b) { return this.req('POST', u, b); }
+  put(u, b) { return this.req('PUT', u, b); }
+}
+
+function receiptForm(fields, image) {
+  const fd = new FormData();
+  for (const [k, v] of Object.entries(fields)) fd.append(k, Array.isArray(v) ? JSON.stringify(v) : String(v));
+  if (image) fd.append('receipt', new Blob([image], { type: 'image/png' }), 'receipt.png');
+  return fd;
+}
+
+const ocr = (date, amount = '5,000', ref = 'TX1001') => `Meezan Bank
+Funds Transfer
+Transaction Date: ${date}
+Amount: Rs. ${amount}
+Beneficiary Name: BAIT UL AQBA FOUNDATION
+Beneficiary Account: PK36MEZN0001230104567890
+Transaction ID: ${ref}`;
+
+const adminC = new Client();
+const donor = new Client();
+
+before(async () => {
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bua-'));
+  process.env.ADMIN_EMAIL = 'boss@example.org';
+  process.env.ADMIN_PASSWORD = 'secret123';
+  app = createApp({ dataDir: dir, uploadsDir: path.join(dir, 'uploads') });
+  await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
+  base = `http://127.0.0.1:${app.server.address().port}`;
+});
+
+after(() => {
+  app.server.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('management login, orphans and settings', async () => {
+  const bad = await adminC.post('/api/auth/login', { login: 'boss@example.org', password: 'nope' });
+  assert.equal(bad.status, 401);
+  const ok = await adminC.post('/api/auth/login', { login: 'boss@example.org', password: 'secret123', role: 'admin' });
+  assert.equal(ok.status, 200);
+  for (const [no, name] of [['BUA-001', 'Ali'], ['BUA-002', 'Sana'], ['BUA-003', 'Omar']]) {
+    const r = await adminC.post('/api/admin/orphans', { orphan_no: no, name, monthly_amount: 5000 });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+  }
+  const dup = await adminC.post('/api/admin/orphans', { orphan_no: 'bua-001', name: 'X' });
+  assert.equal(dup.status, 409);
+  const s = await adminC.put('/api/admin/settings', {
+    officialAccounts: [{ title: 'Bait ul Aqba Foundation', bank: 'Meezan Bank', account: 'PK36 MEZN 0001 2301 0456 7890' }],
+  });
+  assert.equal(s.data.settings.officialAccounts[0].account, 'PK36MEZN0001230104567890');
+});
+
+test('donor registration and access control', async () => {
+  const r = await donor.post('/api/auth/register', { name: 'Ahmed Khan', phone: '0300-1234567', password: 'pass1234' });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.user.phone, '03001234567');
+  const blocked = await donor.get('/api/admin/payments');
+  assert.equal(blocked.status, 403);
+  const anon = await new Client().get('/api/donor/payments');
+  assert.equal(anon.status, 401);
+  const relog = await new Client().post('/api/auth/login', { login: '03001234567', password: 'pass1234', role: 'donor' });
+  assert.equal(relog.status, 200);
+});
+
+test('donor submits current-month receipt with advance months', async () => {
+  const fields = {
+    orphan_nos: ['BUA-001'], months: [month, nextMonth], amount: '10000', payment_date: today,
+    ocr_text: ocr(today, '10,000', 'TX-ADV-1'), ocr_confidence: 88, sharpness: 150,
+  };
+  const r = await donor.req('POST', '/api/donor/payments', undefined, { form: receiptForm(fields, png(1080, 1920, 'a')) });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const p = r.data.payment;
+  assert.equal(p.status, 'pending');
+  assert.deepEqual(p.months, [month, nextMonth]);
+  assert.deepEqual(p.allocations.map((a) => a.amount), [5000, 5000]);
+  assert.equal(p.beneficiary_account, 'PK36MEZN0001230104567890');
+  assert.equal(p.beneficiary_name, 'BAIT UL AQBA FOUNDATION');
+  assert.equal(p.transaction_ref, 'TX-ADV-1');
+  assert.deepEqual(p.flags, []);
+  assert.ok(!p.flags.some((f) => f.code === 'unknown_beneficiary_account'));
+
+  const img = await donor.get(`/api/payments/${p.id}/image`);
+  assert.equal(img.status, 200);
+  const other = new Client();
+  await other.post('/api/auth/register', { name: 'Other', email: 'other@example.com', password: 'pass1234' });
+  assert.equal((await other.get(`/api/payments/${p.id}/image`)).status, 403);
+});
+
+test('receipts outside the current month are rejected', async () => {
+  const oldDate = `${lastMonth}-15`;
+  const base = { orphan_nos: 'BUA-002', months: month, amount: '5000', ocr_confidence: 90, sharpness: 150 };
+  let r = await donor.req('POST', '/api/donor/payments', undefined, {
+    form: receiptForm({ ...base, payment_date: oldDate, ocr_text: ocr(oldDate) }, png(1000, 1000, 'b')),
+  });
+  assert.equal(r.status, 422);
+  assert.match(r.data.error, /current month/);
+
+  // Donor types today's date but the receipt image shows last month.
+  r = await donor.req('POST', '/api/donor/payments', undefined, {
+    form: receiptForm({ ...base, payment_date: today, ocr_text: ocr(oldDate) }, png(1000, 1000, 'c')),
+  });
+  assert.equal(r.status, 422);
+  assert.match(r.data.error, /not in the current month/);
+});
+
+test('unclear receipts are rejected', async () => {
+  const base = { orphan_nos: 'BUA-002', months: month, amount: '5000', payment_date: today, ocr_text: ocr(today, '5,000', 'TX-UNCLEAR') };
+  let r = await donor.req('POST', '/api/donor/payments', undefined, { form: receiptForm({ ...base, ocr_confidence: 30, sharpness: 150 }, png(1000, 1000, 'd')) });
+  assert.equal(r.status, 422);
+  r = await donor.req('POST', '/api/donor/payments', undefined, { form: receiptForm({ ...base, ocr_confidence: 90, sharpness: 5 }, png(1000, 1000, 'e')) });
+  assert.equal(r.status, 422);
+  assert.match(r.data.error, /blurry/);
+  r = await donor.req('POST', '/api/donor/payments', undefined, { form: receiptForm({ ...base, ocr_confidence: 90, sharpness: 150 }, png(200, 150, 'f')) });
+  assert.equal(r.status, 422);
+  assert.match(r.data.error, /too small/);
+  r = await donor.req('POST', '/api/donor/payments', undefined, { form: receiptForm({ ...base, ocr_confidence: 90, sharpness: 150 }) });
+  assert.equal(r.status, 400);
+});
+
+test('duplicates are blocked and unknown beneficiaries flagged', async () => {
+  const dupImg = png(1080, 1920, 'a');
+  let r = await donor.req('POST', '/api/donor/payments', undefined, {
+    form: receiptForm({ orphan_nos: 'BUA-002', months: month, amount: 5000, payment_date: today, ocr_text: ocr(today, '5,000', 'NEW1'), ocr_confidence: 90, sharpness: 150 }, dupImg),
+  });
+  assert.equal(r.status, 409);
+  r = await donor.req('POST', '/api/donor/payments', undefined, {
+    form: receiptForm({ orphan_nos: 'BUA-002', months: month, amount: 5000, payment_date: today, ocr_text: ocr(today, '5,000', 'TX-ADV-1'), ocr_confidence: 90, sharpness: 150 }, png(900, 900, 'g')),
+  });
+  assert.equal(r.status, 409);
+  assert.match(r.data.error, /transaction ID/);
+
+  const text = `HBL\nDate: ${today}\nAmount: Rs 3,000\nTo: Zainab Bibi\nAccount Number: 1234 5678 9012 34\nTID: 99887766`;
+  r = await donor.req('POST', '/api/donor/payments', undefined, {
+    form: receiptForm({ orphan_nos: 'BUA-002', months: month, amount: 3000, payment_date: today, ocr_text: text, ocr_confidence: 80, sharpness: 150 }, png(900, 900, 'h')),
+  });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.payment.beneficiary_account, '12345678901234');
+  assert.ok(r.data.payment.flags.some((f) => f.code === 'unknown_beneficiary_account'));
+});
+
+test('management review, weekly report, coverage and beneficiaries', async () => {
+  const list = await adminC.get('/api/admin/payments?status=pending');
+  assert.equal(list.data.total, 2);
+  const [unknown, adv] = list.data.payments;
+  assert.equal((await adminC.post(`/api/admin/payments/${adv.id}/verify`, {})).data.payment.status, 'verified');
+  assert.equal((await adminC.post(`/api/admin/payments/${unknown.id}/reject`, {})).status, 400);
+  assert.equal((await adminC.post(`/api/admin/payments/${unknown.id}/reject`, { note: 'Paid to wrong account' })).data.payment.status, 'rejected');
+
+  const weekly = await adminC.get(`/api/admin/reports/weekly?month=${month}`);
+  assert.equal(weekly.status, 200);
+  assert.equal(weekly.data.totals.total, 10000);
+  assert.equal(weekly.data.totals.current_total, 5000);
+  assert.equal(weekly.data.totals.advance_total, 5000);
+  const wk = Math.min(5, Math.ceil(Number(today.slice(8)) / 7));
+  assert.equal(weekly.data.weeks[wk - 1].count, 1);
+  assert.equal(weekly.data.beneficiaries[0].official, true);
+
+  const cov = await adminC.get(`/api/admin/reports/coverage?month=${nextMonth}`);
+  const row = cov.data.rows.find((x) => x.orphan_no === 'BUA-001');
+  assert.equal(row.state, 'paid');
+  assert.equal(row.paid_in_advance, true);
+  assert.equal(cov.data.summary.unpaid, 2);
+
+  const ben = await adminC.get(`/api/admin/reports/beneficiaries?from=${month}-01&to=${month}-31&status=verified,pending,rejected`);
+  assert.equal(ben.data.groups.length, 2);
+
+  const csv = await adminC.get(`/api/admin/reports/weekly.csv?month=${month}`);
+  assert.match(csv.data, /week,entry_id,donor_name/);
+
+  const mine = await donor.get('/api/donor/payments');
+  assert.equal(mine.data.payments.find((p) => p.id === unknown.id).admin_note, 'Paid to wrong account');
+  const orphans = await donor.get('/api/donor/orphans');
+  assert.equal(orphans.data.orphans.find((o) => o.orphan_no === 'BUA-001').paid_through, nextMonth);
+});
+
+test('admin edit re-allocates months', async () => {
+  const list = await adminC.get('/api/admin/payments?status=verified');
+  const id = list.data.payments[0].id;
+  const r = await adminC.put(`/api/admin/payments/${id}`, { orphan_nos: ['BUA-001', 'BUA-003'], months: [month] });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.deepEqual(r.data.payment.allocations.map((a) => [a.orphan_no, a.amount]), [['BUA-001', 5000], ['BUA-003', 5000]]);
+});
+
+test('export and import round trip', async () => {
+  const exp = await adminC.get('/api/admin/export/payments.csv');
+  assert.equal(exp.status, 200);
+  assert.match(exp.data, /entry_id,donor_name/);
+
+  const csv = [
+    'donor_name,donor_phone,donor_email,orphan_nos,months,amount,payment_date,bank_name,transaction_ref,beneficiary_name,beneficiary_account,status',
+    `Bilal,03111111111,,BUA-003,"${lastMonth};${month}",8000,${lastMonth}-10,UBL,IMP-1,Bait ul Aqba,PK36MEZN0001230104567890,verified`,
+    `Bilal,03111111111,,BUA-999,${month},100,${month}-01,UBL,IMP-2,,,pending`,
+    `Ahmed Khan,03001234567,,BUA-002,${month},5000,${month}-02,Meezan,TX-ADV-1,,,pending`,
+  ].join('\n');
+  const dry = await adminC.post('/api/admin/import/payments', { csv, dry_run: true });
+  assert.equal(dry.status, 200, JSON.stringify(dry.data));
+  assert.equal(dry.data.created, 1);
+  assert.equal(dry.data.skipped, 1);
+  assert.equal(dry.data.errors.length, 1);
+  assert.equal(dry.data.errors[0].row, 3);
+  assert.equal((await adminC.get('/api/admin/payments?q=IMP-1')).data.total, 0, 'dry run must not write');
+
+  const real = await adminC.post('/api/admin/import/payments', { csv });
+  assert.equal(real.data.created, 1);
+  const imported = (await adminC.get('/api/admin/payments?q=IMP-1')).data.payments[0];
+  assert.equal(imported.status, 'verified');
+  assert.equal(imported.source, 'import');
+  assert.deepEqual(imported.months, [lastMonth, month]);
+
+  const orphanCsv = 'orphan_no,name,monthly_amount\nBUA-010,Hira,4000\nBUA-001,Ali Updated,5000\n';
+  const o = await adminC.post('/api/admin/import/orphans', { csv: orphanCsv });
+  assert.deepEqual([o.data.created, o.data.updated], [1, 1]);
+
+  const tpl = await adminC.get('/api/admin/import/template/payments.csv');
+  assert.match(tpl.data, /BUA-001/);
+});
