@@ -119,7 +119,7 @@ function orphanCard(o, month) {
     <div class="card" style="margin:0">
       <div class="card-head" style="margin-bottom:4px"><h3>${o.name}</h3><span class="badge badge-muted mono">${o.orphan_no}</span></div>
       <div class="muted small">${o.monthly_amount ? `Monthly sponsorship: ${money(o.monthly_amount)}` : ''}
-        ${o.paid_through ? html` · Paid through <strong>${fmtMonth(o.paid_through)}</strong>` : html` · <span style="color:var(--danger)">${fmtMonth(month)} not yet paid</span>`}</div>
+        ${o.monthly_amount ? ' · ' : ''}${o.paid_through ? html`Paid through <strong>${fmtMonth(o.paid_through)}</strong>` : html`<span style="color:var(--danger)">${fmtMonth(month)} not yet paid</span>`}</div>
       <div class="strip">${cells}</div>
     </div>`;
 }
