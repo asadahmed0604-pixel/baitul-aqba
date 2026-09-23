@@ -31,8 +31,15 @@ export function parseCsv(text) {
     } else field += c;
   }
   if (field !== '' || row.length) { row.push(field); rows.push(row); }
-  const nonEmpty = rows.filter((r) => r.some((v) => v.trim() !== ''));
+  // Keep each record's position so import errors can name the spreadsheet row.
+  const nonEmpty = rows.map((r, i) => ({ r, rowNo: i + 1 })).filter(({ r }) => r.some((v) => v.trim() !== ''));
   if (!nonEmpty.length) return [];
-  const header = nonEmpty[0].map((h) => h.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''));
-  return nonEmpty.slice(1).map((r) => Object.fromEntries(header.map((h, i) => [h, (r[i] ?? '').trim().replace(/^'(?=[=+\-@])/, '')])));
+  const header = nonEmpty[0].r.map(normalizeHeader);
+  return nonEmpty.slice(1).map(({ r, rowNo }) => {
+    const obj = Object.fromEntries(header.map((h, i) => [h, (r[i] ?? '').trim().replace(/^'(?=[=+\-@])/, '')]));
+    Object.defineProperty(obj, '_row', { value: rowNo });
+    return obj;
+  });
 }
+
+export const normalizeHeader = (h) => String(h).trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');

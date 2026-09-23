@@ -63,7 +63,11 @@ All files are CSV and open directly in Excel or Google Sheets.
 - **Import:** donation entries, orphans and donors. Download a template from the Import page first.
   Use **Check file** to validate without saving; rows with problems are listed by row number.
   - Entries: separate several orphans or months with `;` (e.g. `2026-09;2026-10`). Rows whose transaction ID already exists are skipped. Donors are matched by phone or email and created if new. The current-month rule does not apply to imported history.
-  - Orphans: existing orphan numbers are updated and new ones are added.
+  - Orphans: existing orphan numbers are updated and new ones are added; columns missing from the file keep their current values.
+    The foundation's orphan sheet (`Code, Orphan's Name, Name, Child Phone, SP Code, Sponsor Name, Sponsor Phone, Sponsor Area`)
+    imports as-is: each sponsor becomes a donor (one per phone number, SP codes kept) and is linked to their orphans.
+  - Imports accept Excel `.xlsx` (first sheet) or CSV. Phone numbers are stored in one form (`+923001234567`), so donors can sign in with `0300…` or `+92 300…`.
+  - Imported sponsors have no password. When one registers on the donor portal with the same phone number, they take over that record (once; logged as `donor.claim`).
 
 ## Settings you can change
 

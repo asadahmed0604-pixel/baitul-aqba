@@ -487,11 +487,11 @@ PAGES.orphans = async (view) => {
       <div class="grow"><h1>Orphans</h1><p class="muted">${orphans.filter((o) => o.status === 'active').length} active · ${orphans.length} total</p></div>
       <button class="btn" id="exp">⬇ Export</button><a class="btn" href="#data">⇪ Import</a><button class="btn btn-primary" id="add">＋ Add orphan</button>
     </div>
-    <div class="filters"><label style="flex:1">Search<input id="o-q" placeholder="Number, name, guardian, sponsor"></label></div>
+    <div class="filters"><label style="flex:1">Search<input id="o-q" placeholder="Number, name (English or Arabic), phone, sponsor"></label></div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Orphan no.</th><th>Name</th><th>Guardian</th><th>City</th><th class="num">Monthly</th><th>Sponsor(s)</th><th>Paid until</th><th>Status</th></tr></thead>
-      <tbody id="o-body">${orphans.map((o) => html`<tr class="clickable" data-id="${o.id}" data-text="${[o.orphan_no, o.name, o.guardian_name, o.sponsors, o.city].join(' ').toLowerCase()}">
-        <td class="mono">${o.orphan_no}</td><td>${o.name}</td><td>${o.guardian_name || ''}</td><td>${o.city || ''}</td><td class="num">${money(o.monthly_amount)}</td>
+      <thead><tr><th>Orphan no.</th><th>Name</th><th>Child phone</th><th>Guardian</th><th>City</th><th class="num">Monthly</th><th>Sponsor(s)</th><th>Paid until</th><th>Status</th></tr></thead>
+      <tbody id="o-body">${orphans.map((o) => html`<tr class="clickable" data-id="${o.id}" data-text="${[o.orphan_no, o.name, o.name_ar, o.child_phone, o.guardian_name, o.sponsors, o.city].join(' ').toLowerCase()}">
+        <td class="mono">${o.orphan_no}</td><td>${o.name}${o.name_ar ? html`<div class="muted small" dir="rtl" lang="ar">${o.name_ar}</div>` : ''}</td><td class="mono small nowrap">${o.child_phone || ''}</td><td>${o.guardian_name || ''}</td><td>${o.city || ''}</td><td class="num">${money(o.monthly_amount)}</td>
         <td class="small">${o.sponsors || html`<span class="muted">—</span>`}</td>
         <td>${o.paid_until ? html`<span class="${o.paid_until < cfg.month ? '' : 'badge badge-ok'}">${fmtMonth(o.paid_until)}</span>` : html`<span class="muted">—</span>`}</td>
         <td><span class="badge ${o.status === 'active' ? 'badge-ok' : 'badge-muted'}">${o.status}</span></td></tr>`)}</tbody>
@@ -511,6 +511,8 @@ function orphanForm(o = {}) {
       <label>Orphan number<input name="orphan_no" required value="${o.orphan_no || ''}" placeholder="BUA-001"></label>
       <label>Monthly sponsorship (${cfg.currency})<input name="monthly_amount" inputmode="decimal" value="${o.monthly_amount ?? ''}"></label>
       <label>Name<input name="name" required value="${o.name || ''}"></label>
+      <label>Name (Arabic)<input name="name_ar" dir="rtl" lang="ar" value="${o.name_ar || ''}"></label>
+      <label>Child / family phone<input name="child_phone" inputmode="tel" value="${o.child_phone || ''}"></label>
       <label>Guardian name<input name="guardian_name" value="${o.guardian_name || ''}"></label>
       <label>Date of birth<input type="date" name="date_of_birth" value="${o.date_of_birth || ''}"></label>
       <label>City<input name="city" value="${o.city || ''}"></label>
@@ -543,11 +545,11 @@ PAGES.donors = async (view) => {
       <div class="grow"><h1>Donors</h1><p class="muted">${donors.length} donors</p></div>
       <button class="btn" id="exp">⬇ Export</button><a class="btn" href="#data">⇪ Import</a><button class="btn btn-primary" id="add">＋ Add donor</button>
     </div>
-    <div class="filters"><label style="flex:1">Search<input id="d-q" placeholder="Name, phone, email, orphan no."></label></div>
+    <div class="filters"><label style="flex:1">Search<input id="d-q" placeholder="Name, phone, email, SP code, orphan no."></label></div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Name</th><th>Phone / email</th><th>City</th><th>Orphans</th><th class="num">Entries</th><th class="num">Verified total</th><th>Last receipt</th><th>Login</th></tr></thead>
-      <tbody id="d-body">${donors.map((d) => html`<tr class="clickable" data-id="${d.id}" data-text="${[d.name, d.phone, d.email, d.orphan_nos, d.city].join(' ').toLowerCase()}">
-        <td>${d.name}${d.active ? '' : html` <span class="badge badge-muted">inactive</span>`}</td><td>${d.phone || ''}<div class="muted small">${d.email || ''}</div></td><td>${d.city || ''}</td>
+      <thead><tr><th>Name</th><th>SP code</th><th>Phone / email</th><th>City</th><th>Orphans</th><th class="num">Entries</th><th class="num">Verified total</th><th>Last receipt</th><th>Login</th></tr></thead>
+      <tbody id="d-body">${donors.map((d) => html`<tr class="clickable" data-id="${d.id}" data-text="${[d.name, d.phone, d.email, d.sponsor_code, d.orphan_nos, d.city].join(' ').toLowerCase()}">
+        <td>${d.name}${d.active ? '' : html` <span class="badge badge-muted">inactive</span>`}</td><td class="mono small">${(d.sponsor_code || '').split(';').join(', ')}</td><td>${d.phone || ''}<div class="muted small">${d.email || ''}</div></td><td>${d.city || ''}</td>
         <td class="mono small">${(d.orphan_nos || '').split(';').join(', ')}</td><td class="num">${d.entries}</td><td class="num">${money(d.verified_total)}</td>
         <td>${fmtDate(d.last_payment)}</td><td>${d.can_login ? html`<span class="badge badge-ok">yes</span>` : html`<span class="badge badge-muted">no password</span>`}</td></tr>`)}</tbody>
     </table>${donors.length ? '' : html`<div class="empty">No donors yet</div>`}</div>`);
@@ -567,6 +569,7 @@ function donorForm(d = {}) {
       <label>Phone<input name="phone" value="${d.phone || ''}"></label>
       <label>Email<input name="email" type="email" value="${d.email || ''}"></label>
       <label>City<input name="city" value="${d.city || ''}"></label>
+      <label>Sponsor code <span class="hint">e.g. SP11</span><input name="sponsor_code" value="${d.sponsor_code || ''}"></label>
       <label class="full">Sponsored orphan numbers <span class="hint">separate with ;</span><input name="orphan_nos" value="${(d.orphan_nos || '').split(';').join('; ')}"></label>
       ${d.id ? html`<label class="check full"><input type="checkbox" name="active" ${d.active ? 'checked' : ''}>Active (can sign in)</label>`
         : html`<label class="full">Password <span class="hint">(optional; the donor signs in with phone/email + this password)</span><input name="password" type="text" minlength="6"></label>`}
@@ -595,7 +598,7 @@ function donorForm(d = {}) {
 
 PAGES.data = async (view) => {
   view.innerHTML = String(html`
-    <div class="page-head"><div class="grow"><h1>Import / Export</h1><p class="muted">CSV files open directly in Excel and Google Sheets. To import, save your sheet as CSV (UTF-8).</p></div></div>
+    <div class="page-head"><div class="grow"><h1>Import / Export</h1><p class="muted">Exports are CSV files that open directly in Excel and Google Sheets. Imports take an Excel (.xlsx) or CSV file.</p></div></div>
     <div class="grid grid-2">
       <div class="card" style="margin:0">
         <div class="card-head"><h3>Export</h3></div>
@@ -615,9 +618,10 @@ PAGES.data = async (view) => {
         <form class="stack" id="imp-form">
           <label>What are you importing?<select name="kind">
             <option value="payments">Donation entries</option><option value="orphans">Orphans (adds new, updates existing by number)</option><option value="donors">Donors</option></select></label>
-          <label>CSV file<input type="file" name="file" accept=".csv,text/csv" required></label>
+          <label>Excel or CSV file<input type="file" name="file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required></label>
           <p class="small muted">Download a template: <a href="/api/admin/import/template/payments.csv">entries</a> · <a href="/api/admin/import/template/orphans.csv">orphans</a> · <a href="/api/admin/import/template/donors.csv">donors</a>.
-            In entries, list several orphans or months separated by <code>;</code> (e.g. <code>2026-09;2026-10</code>). Rows whose transaction ID already exists are skipped. Donors are matched by phone or email and created if new.</p>
+            In entries, list several orphans or months separated by <code>;</code> (e.g. <code>2026-09;2026-10</code>). Rows whose transaction ID already exists are skipped. Donors are matched by phone or email and created if new.
+            <br>The foundation's orphan sheet (<code>Code</code>, <code>Orphan's Name</code>, <code>Name</code>, <code>Child Phone</code>, <code>SP Code</code>, <code>Sponsor Name</code>, <code>Sponsor Phone</code>, <code>Sponsor Area</code>) can be imported as it is under <em>Orphans</em>: sponsors become donors and are linked to their orphans.</p>
           <div class="form-error" role="alert"></div>
           <div class="actions" style="justify-content:flex-start"><button class="btn" type="submit" data-mode="dry">Check file (no changes)</button><button class="btn btn-primary" type="button" id="imp-go">Import</button></div>
         </form>
@@ -640,14 +644,16 @@ PAGES.data = async (view) => {
     $('#imp-out').innerHTML = String(html`
       <div class="alert ${r.errors.length ? 'alert-warn' : 'alert-ok'}" style="margin-top:14px">
         <strong>${r.dry_run ? 'Check result (nothing saved yet)' : 'Import finished'}:</strong>
-        ${r.total} rows · ${r.created} ${r.dry_run ? 'will be created' : 'created'} · ${r.updated} ${r.dry_run ? 'will be updated' : 'updated'} · ${r.skipped} skipped (already exist) · ${r.errors.length} errors
+        ${r.total} rows · ${r.created} ${r.dry_run ? 'will be created' : 'created'} · ${r.updated} ${r.dry_run ? 'will be updated' : 'updated'} · ${r.skipped} skipped · ${r.errors.length} errors
+        ${r.kind === 'orphans' && (r.sponsors_linked || r.donors_created) ? html`<br>Sponsors: ${r.sponsors_linked} orphans ${r.dry_run ? 'will be' : ''} linked to a donor · ${r.donors_created} new donor accounts · ${r.no_sponsor} orphans without a sponsor` : ''}
       </div>
-      ${r.errors.length ? html`<div class="table-wrap"><table><thead><tr><th>Row</th><th>Problem</th></tr></thead><tbody>${r.errors.map((e) => html`<tr><td>${e.row}</td><td>${e.message}</td></tr>`)}</tbody></table></div>` : ''}`);
+      ${r.errors.length ? html`<div class="table-wrap"><table><thead><tr><th>Row</th><th>Problem</th></tr></thead><tbody>${r.errors.map((e) => html`<tr><td>${e.row}</td><td>${e.message}</td></tr>`)}</tbody></table></div>` : ''}
+      ${r.skipped_rows?.length ? html`<details style="margin-top:10px"><summary class="small">Skipped rows (${r.skipped_rows.length})</summary><div class="table-wrap"><table><thead><tr><th>Row</th><th>Why</th></tr></thead><tbody>${r.skipped_rows.map((x) => html`<tr><td>${x.row}</td><td>${x.reason}</td></tr>`)}</tbody></table></div></details>` : ''}`);
     if (!r.dry_run) toast('Import complete');
   };
   onSubmit(form, () => run(true));
   $('#imp-go').onclick = async () => {
-    if (!form.file.files.length) { toast('Choose a CSV file first', 'error'); return; }
+    if (!form.file.files.length) { toast('Choose an Excel or CSV file first', 'error'); return; }
     if (!(await confirmDialog('Import this file now? Rows with errors will be skipped.', { okLabel: 'Import' }))) return;
     try { await run(false); } catch (e) { toast(e.message, 'error'); }
   };

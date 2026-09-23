@@ -191,7 +191,7 @@ export function renderAuth(root, { role, title, subtitle, allowRegister, onSigne
         <div class="auth-card">
           <a href="/" class="brand brand-lg"><span class="brand-mark">ب</span><span>${config?.foundationName || 'Bait ul Aqba'}</span></a>
           <h2>Create donor account</h2>
-          <p class="muted">Register once, then submit your monthly donation receipts.</p>
+          <p class="muted">Register once, then submit your monthly donation receipts. Already sponsoring an orphan? Use the phone number the foundation has for you and your orphans will appear automatically.</p>
           <form class="stack" id="reg-form">
             <label>Full name<input name="name" required autocomplete="name"></label>
             <label>Phone number<input name="phone" inputmode="tel" autocomplete="tel" placeholder="03xx xxxxxxx"></label>

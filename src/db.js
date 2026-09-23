@@ -114,7 +114,21 @@ export function openDb(file) {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
+  migrate(db);
   return db;
+}
+
+// Columns added after the first release. Each runs once, only when the column is missing.
+const MIGRATIONS = [
+  ['orphans', 'name_ar', 'TEXT'],
+  ['orphans', 'child_phone', 'TEXT'],
+  ['users', 'sponsor_code', 'TEXT'],
+];
+function migrate(db) {
+  for (const [table, column, type] of MIGRATIONS) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  }
 }
 
 let savepointSeq = 0;

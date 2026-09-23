@@ -28,7 +28,12 @@ Web service taqreeban $7 mahana aur 5 GB disk taqreeban $1–2 mahana hai. Sahi 
 5. **Intezar karein.** 3–5 minute mein status **Live** ho jayega, aur upar aap ka link dikhega (jaise `https://baitul-aqba.onrender.com`).
 6. **Management mein login karein.** `https://…/admin` kholein aur upar wala email/password dalein.
 7. **Settings → Foundation accounts** mein foundation ke tamam bank accounts / IBAN dalein. Kisi aur account mein bheja gaya paisa khud flag ho jayega.
-8. **Orphans** mein orphans aur un ke numbers dalein. Excel list ho to **Import / Export → Orphans** se aik saath import karein; template wahin se download karein.
+8. **Orphans ka data dalein:** **Import / Export** kholein → "What are you importing?" mein **Orphans** chunein → apni Excel file (jaise `Printable.xlsx`) chunein → pehle **Check file** dabayein, phir **Import**.
+   - Excel file seedha chalti hai, CSV banane ki zaroorat nahi. Columns: `Code, Orphan's Name, Name, Child Phone, SP Code, Sponsor Name, Sponsor Phone, Sponsor Area`.
+   - Har sponsor khud donor ban kar apne orphans se link ho jata hai. Aik phone number = aik donor account.
+   - Dobara import karna mehfooz hai: kuch double nahi hota, aur haath se dale gaye monthly amounts nahi mit-te.
+   - Imported sponsors ka password nahi hota. Jab sponsor donor link par **"Create an account"** mein wahi phone number dalta hai jo sheet mein hai, to usay apna purana account (orphans ke saath) mil jata hai.
+     Yeh sirf pehli dafa hota hai, aur Activity log mein `donor.claim` likha jata hai.
 9. **Donors ko link bhejein** (WhatsApp par):
    > Assalam-o-Alaikum! Apni monthly donation ki receipt yahan jama karein: https://…/donor
    > Pehli dafa "Create an account" karein. Phone ke browser menu se "Add to Home screen" karne se app ban jayegi.

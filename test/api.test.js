@@ -96,7 +96,7 @@ test('management login, orphans and settings', async () => {
 test('donor registration and access control', async () => {
   const r = await donor.post('/api/auth/register', { name: 'Ahmed Khan', phone: '0300-1234567', password: 'pass1234' });
   assert.equal(r.status, 200);
-  assert.equal(r.data.user.phone, '03001234567');
+  assert.equal(r.data.user.phone, '+923001234567'); // stored in one canonical form
   const blocked = await donor.get('/api/admin/payments');
   assert.equal(blocked.status, 403);
   const anon = await new Client().get('/api/donor/payments');
@@ -256,4 +256,87 @@ test('export and import round trip', async () => {
 
   const tpl = await adminC.get('/api/admin/import/template/payments.csv');
   assert.match(tpl.data, /BUA-001/);
+});
+
+// Build a minimal .xlsx (stored, uncompressed zip) with inline strings.
+function xlsx(rows) {
+  const esc = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const col = (i) => String.fromCharCode(65 + i);
+  const sheet = `<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${
+    rows.map((r, ri) => `<row r="${ri + 1}">${r.map((v, ci) => (v === '' ? '' : `<c r="${col(ci)}${ri + 1}" t="inlineStr"><is><t>${esc(v)}</t></is></c>`)).join('')}</row>`).join('')
+  }</sheetData></worksheet>`;
+  const files = {
+    'xl/workbook.xml': '<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>',
+    'xl/_rels/workbook.xml.rels': '<Relationships><Relationship Id="rId1" Type="worksheet" Target="worksheets/sheet1.xml"/></Relationships>',
+    'xl/worksheets/sheet1.xml': sheet,
+  };
+  const locals = [], centrals = [];
+  let offset = 0;
+  for (const [name, text] of Object.entries(files)) {
+    const data = Buffer.from(text), n = Buffer.from(name);
+    const lh = Buffer.alloc(30); lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt32LE(data.length, 18); lh.writeUInt32LE(data.length, 22); lh.writeUInt16LE(n.length, 26);
+    const ch = Buffer.alloc(46); ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt32LE(data.length, 20); ch.writeUInt32LE(data.length, 24); ch.writeUInt16LE(n.length, 28); ch.writeUInt32LE(offset, 42);
+    locals.push(lh, n, data); centrals.push(ch, n);
+    offset += 30 + n.length + data.length;
+  }
+  const cd = Buffer.concat(centrals);
+  const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(Object.keys(files).length, 8); end.writeUInt16LE(Object.keys(files).length, 10);
+  end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, cd, end]);
+}
+
+test('imports the foundation orphan sheet (.xlsx) with sponsors', async () => {
+  const sheet = xlsx([
+    ['Code', "Orphan's Name", 'Name', 'Child Phone', 'SP Code', 'Sponsor Name', 'Sponsor Phone', 'Sponsor Area'],
+    ['OR001', 'Maram Tariq', 'مرام طارق', '972592515321', 'SP11', 'Shafqat Ara', '+92 311 5959391', 'Gilgit'],
+    ['OR002 ', 'Anas Khalid', 'أنس خالد', '972 59-259-9069', 'SP11', 'Shafqat Ara', '+92 311 5959391', 'Gilgit'],
+    ['OR003', 'Obaida Raif', 'عبيدة رائف', '00972567616268', 'N/A', 'No Sponsor', '', ''],
+    ['OR004', 'Emad Mohammed', 'عماد محمد', '+970592407547', 'SP379', 'Al-Ghurba', '', ''],
+    ['OR005', 'Amira Mahmood', 'أميرة محمود', '972597402516', '', 'Imran Hamza', '+923204000455', ''],
+    ['', '', '', '+972597789104', '', '', '', ''],
+  ]);
+  const send = (dry) => {
+    const fd = new FormData();
+    fd.append('file', new Blob([sheet]), 'Printable.xlsx');
+    fd.append('dry_run', dry ? '1' : '0');
+    return adminC.req('POST', '/api/admin/import/orphans', undefined, { form: fd });
+  };
+  const dry = await send(true);
+  assert.equal(dry.status, 200, JSON.stringify(dry.data));
+  assert.deepEqual([dry.data.created, dry.data.errors.length, dry.data.skipped], [5, 0, 1]);
+  assert.equal(dry.data.skipped_rows[0].row, 7);
+  const real = await send(false);
+  assert.deepEqual([real.data.created, real.data.donors_created, real.data.sponsors_linked, real.data.no_sponsor], [5, 3, 4, 1]);
+
+  const { orphans } = (await adminC.get('/api/admin/orphans')).data;
+  const or2 = orphans.find((o) => o.orphan_no === 'OR002');
+  assert.equal(or2.name, 'Anas Khalid');
+  assert.equal(or2.name_ar, 'أنس خالد');
+  assert.equal(or2.child_phone, '+972592599069');
+  assert.equal(orphans.find((o) => o.orphan_no === 'OR003').child_phone, '+972567616268');
+  const { donors } = (await adminC.get('/api/admin/donors')).data;
+  const shafqat = donors.find((d) => d.name === 'Shafqat Ara');
+  assert.equal(shafqat.phone, '+923115959391');
+  assert.equal(shafqat.sponsor_code, 'SP11');
+  assert.equal(shafqat.orphan_nos, 'OR001;OR002');
+
+  // An imported sponsor registers with their phone number and gets the existing record with their orphans.
+  const claim = new Client();
+  const reg = await claim.post('/api/auth/register', { name: 'Imran', phone: '0320-4000455', password: 'claimed1' });
+  assert.equal(reg.status, 200, JSON.stringify(reg.data));
+  assert.equal(reg.data.claimed, true);
+  assert.equal(reg.data.user.name, 'Imran Hamza');
+  assert.deepEqual((await claim.get('/api/donor/orphans')).data.orphans.map((o) => o.orphan_no), ['OR005']);
+  // …but only once: a second registration with that number is refused.
+  assert.equal((await new Client().post('/api/auth/register', { name: 'X', phone: '03204000455', password: 'another1' })).status, 409);
+
+  // The sponsor can later sign in with the local number format once a password is set.
+  await adminC.post(`/api/admin/donors/${shafqat.id}/password`, { password: 'sponsor1' });
+  assert.equal((await new Client().post('/api/auth/login', { login: '0311-5959391', password: 'sponsor1' })).status, 200);
+
+  // Re-importing is safe: nothing duplicated, amounts set by hand are kept.
+  await adminC.put(`/api/admin/orphans/${or2.id}`, { ...or2, monthly_amount: 6000 });
+  const again = await send(false);
+  assert.deepEqual([again.data.created, again.data.updated, again.data.donors_created], [0, 5, 0]);
+  assert.equal((await adminC.get('/api/admin/orphans')).data.orphans.find((o) => o.orphan_no === 'OR002').monthly_amount, 6000);
 });
