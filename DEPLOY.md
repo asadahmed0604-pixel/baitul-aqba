@@ -17,7 +17,7 @@ Is repo mein `render.yaml` aur `Dockerfile` pehle se tayyar hain, is liye Render
 Is ke liye aik paid plan chahiye, kyun ke database aur receipt ki tasveeron ke liye permanent disk chahiye.
 Web service taqreeban $7 mahana aur 5 GB disk taqreeban $1–2 mahana hai. Sahi qeemat render.com/pricing par dekh lein.
 
-1. **Code ko `main` branch mein laayein.** GitHub par repo `asadahmed0604-pixel/baitul-aqba` kholein. Branch `claude/bait-ul-aqba-donations-onqlqn` ka Pull Request bana kar merge karein.
+1. **Code GitHub par tayyar hai.** Repo `asadahmed0604-pixel/baitul-aqba` ki default branch `claude/bait-ul-aqba-donations-onqlqn` hai, aur Render yahi branch khud le leta hai. Agar Render branch pooche to yahi chunein.
 2. **Render account banayein.** <https://render.com> par "Sign in with GitHub" karein.
 3. **Blueprint banayein.** Dashboard mein **New → Blueprint** dabayein, phir repo `baitul-aqba` chunein.
 4. Render do cheezein poochega:
