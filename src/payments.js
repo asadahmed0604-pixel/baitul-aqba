@@ -341,12 +341,27 @@ export function updatePayment(db, settings, id, fields, actorId) {
 }
 
 export function setStatus(db, id, status, note, actorId) {
-  const p = db.prepare('SELECT id FROM payments WHERE id = ?').get(id);
+  const p = db.prepare('SELECT * FROM payments WHERE id = ?').get(id);
   if (!p) fail(404, 'Entry not found');
+  const changed = p.status !== status;
   db.prepare(`UPDATE payments SET status = ?, admin_note = COALESCE(?, admin_note), reviewed_by = ?, reviewed_at = datetime('now') WHERE id = ?`)
     .run(status, note ? String(note).slice(0, 1000) : null, actorId, id);
   audit(db, actorId, `payment.${status}`, 'payment', id, note ? { note } : null);
+  if (changed) notifyDonor(db, getPayment(db, id));
   return getPayment(db, id);
+}
+
+/** Tell the donor what happened to their entry (shown in the donor portal). */
+export function notifyDonor(db, p) {
+  const what = `Entry #${p.id}: ${p.amount.toLocaleString('en-US')} paid on ${p.payment_date} for ${p.orphan_nos.join(', ')}`;
+  const msg = {
+    rejected: ['Receipt rejected', `${what} was rejected. Reason: ${p.admin_note || 'not given'}. Please submit a clear receipt dated this month.`],
+    verified: ['Donation verified', `${what} has been verified. Thank you.`],
+    pending: ['Entry back under review', `${what} is being reviewed again.`],
+  }[p.status];
+  if (!msg) return;
+  db.prepare('INSERT INTO notifications (user_id, kind, title, message, payment_id) VALUES (?, ?, ?, ?, ?)')
+    .run(p.donor_id, p.status, msg[0], msg[1], p.id);
 }
 
 export function deletePayment(db, uploadsDir, id, actorId) {

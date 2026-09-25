@@ -5,7 +5,7 @@ export function toCsv(columns, rows) {
     if (v == null) return '';
     let s = String(v);
     // Neutralise spreadsheet formula injection from user-supplied text.
-    if (/^[=+\-@\t\r]/.test(s) && !/^-?\d+(\.\d+)?$/.test(s)) s = `'${s}`;
+    if (/^[=+\-@\t\r]/.test(s) && !/^-?\d+(\.\d+)?$/.test(s) && !/^\+\d{6,15}$/.test(s)) s = `'${s}`;
     return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const lines = [columns.map((c) => esc(c.label)).join(',')];

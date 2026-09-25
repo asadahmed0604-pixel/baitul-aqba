@@ -14,6 +14,9 @@ import {
 import { weeklyReport, coverageReport, beneficiaryReport, paymentsInRange } from './reports.js';
 import { toCsv, parseCsv } from './csv.js';
 import { parseXlsx, isXlsx } from './xlsx.js';
+import { issueLogin, makeUsername, validUsername, localPkMobile } from './logins.js';
+import { registerBatchRoutes, batchSummary } from './batches.js';
+import { orphanLedger, donorLedger, LEDGER_COLUMNS } from './ledgers.js';
 import { addMonths, monthLabel, normalizeAccount, daysInMonth } from '../public/shared/receipt-parser.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -117,8 +120,16 @@ const cleanEmail = (v) => {
 };
 
 function publicUser(u) {
-  return u && { id: u.id, role: u.role, name: u.name, email: u.email, phone: u.phone, city: u.city };
+  return u && {
+    id: u.id, role: u.role, name: u.name, email: u.email, phone: u.phone, city: u.city, username: u.username || null,
+    must_change_password: !!u.password_is_default,
+  };
 }
+
+// English names written consistently: collapse spaces and capitalise words typed in lower case
+// ("ahmad ramzi al-saami" -> "Ahmad Ramzi Al-Saami"); words already capitalised are left alone.
+export const tidyName = (v) => String(v || '').trim().replace(/\s+/g, ' ')
+  .replace(/(^|[\s\-'(])([a-z])/g, (_, sep, ch) => sep + ch.toUpperCase());
 
 // Behind a hosting proxy (Render, Railway, Nginx) the real client address is in X-Forwarded-For.
 const clientIp = (req) => (process.env.TRUST_PROXY === '1' && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim())
@@ -146,7 +157,8 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
     const l = String(login || '').trim();
     if (!l) return null;
     const raw = String(l).replace(/[^\d+]/g, '');
-    return db.prepare('SELECT * FROM users WHERE email = ? COLLATE NOCASE OR phone IN (?, ?)').get(l.toLowerCase(), cleanPhone(l), raw || null);
+    return db.prepare('SELECT * FROM users WHERE username = ? COLLATE NOCASE').get(l)
+      || db.prepare('SELECT * FROM users WHERE email = ? COLLATE NOCASE OR phone IN (?, ?)').get(l.toLowerCase(), cleanPhone(l), raw || null);
   };
 
   function validatePassword(p) {
@@ -166,6 +178,7 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
     const res = db.prepare(`INSERT INTO users (role, name, email, phone, city, password_hash, sponsor_code) VALUES ('donor', ?, ?, ?, ?, ?, ?)`)
       .run(name, email, phone, String(city || '').trim() || null, password ? hashPassword(password) : null, cleanSponsorCode(sponsor_code));
     const id = Number(res.lastInsertRowid);
+    db.prepare('UPDATE users SET username = ? WHERE id = ?').run(makeUsername(db, { id, name, phone }), id);
     audit(db, actorId ?? id, 'donor.create', 'user', id, { name });
     return db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   }
@@ -234,6 +247,9 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
       auth.issue(ctx.res, u);
       return { user: publicUser(u), claimed: true };
     }
+    if (existing && existing.role === 'donor' && existing.password_hash) {
+      fail(409, 'This mobile number already has an account. Sign in with your mobile number (03…); your password is bua- followed by your orphan code, e.g. bua-or001 (unless you changed it).');
+    }
     const u = createDonor(ctx.body);
     auth.issue(ctx.res, u);
     return { user: publicUser(u) };
@@ -246,7 +262,9 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
     const u = db.prepare('SELECT * FROM users WHERE id = ?').get(ctx.user.id);
     if (!verifyPassword(ctx.body.current, u.password_hash)) fail(400, 'Current password is incorrect');
     validatePassword(ctx.body.next);
-    db.prepare('UPDATE users SET password_hash = ?, session_version = session_version + 1 WHERE id = ?').run(hashPassword(ctx.body.next), u.id);
+    if (ctx.body.next === ctx.body.current) fail(400, 'Choose a new password that is different from the current one');
+    db.prepare('UPDATE users SET password_hash = ?, default_password = NULL, password_is_default = 0, session_version = session_version + 1 WHERE id = ?')
+      .run(hashPassword(ctx.body.next), u.id);
     auth.issue(ctx.res, db.prepare('SELECT * FROM users WHERE id = ?').get(u.id));
     return { ok: true };
   });
@@ -280,6 +298,18 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
         return { ...o, months: ms, paid_through: through };
       }),
     };
+  });
+
+  r.get('/api/donor/notifications', auth.requireDonor, (ctx) => ({
+    notifications: db.prepare('SELECT * FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 50').all(ctx.user.id),
+    unread: db.prepare('SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND read_at IS NULL').get(ctx.user.id).n,
+  }));
+  r.post('/api/donor/notifications/read', auth.requireDonor, (ctx) => {
+    const ids = parseList(ctx.body.ids).map(Number).filter(Boolean);
+    if (ids.length) {
+      db.prepare(`UPDATE notifications SET read_at = datetime('now') WHERE user_id = ? AND read_at IS NULL AND id IN (${ids.map(() => '?').join(',')})`).run(ctx.user.id, ...ids);
+    } else db.prepare(`UPDATE notifications SET read_at = datetime('now') WHERE user_id = ? AND read_at IS NULL`).run(ctx.user.id);
+    return { ok: true };
   });
 
   r.get('/api/donor/orphan-lookup/:no', auth.requireDonor, (ctx) => {
@@ -324,7 +354,9 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
     const pendingAll = db.prepare(`SELECT COUNT(*) AS n FROM payments WHERE status = 'pending'`).get().n;
     const flagged = db.prepare(`SELECT COUNT(*) AS n FROM payments WHERE status = 'pending' AND flags != '[]'`).get().n;
     const weekly = weeklyReport(db, s, month, ['verified', 'pending']);
-    const coverage = coverageReport(db, month, ['verified', 'pending']);
+    // "Paid" means verified; orphans covered only by entries still under review are counted separately.
+    const coverage = coverageReport(db, month, ['verified']);
+    const coverageWithPending = coverageReport(db, month, ['verified', 'pending']).summary;
     const recent = db.prepare(`SELECT p.*, u.name AS donor_name FROM payments p JOIN users u ON u.id = p.donor_id ORDER BY p.id DESC LIMIT 8`).all().map((p) => decorate(db, p));
     return {
       month, month_label: monthLabel(month), today,
@@ -334,9 +366,15 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
       orphans: db.prepare(`SELECT COUNT(*) AS n FROM orphans WHERE status = 'active'`).get().n,
       weeks: weekly.weeks.map(({ entries, beneficiaries, ...w }) => w),
       totals: weekly.totals,
-      coverage: coverage.summary,
+      coverage: { ...coverage.summary, awaiting_review: coverageWithPending.paid + coverageWithPending.partial - coverage.summary.paid - coverage.summary.partial },
       beneficiaries: weekly.beneficiaries.slice(0, 6),
       recent,
+      pending_all_amount: db.prepare(`SELECT COALESCE(SUM(amount),0) AS t FROM payments WHERE status = 'pending'`).get().t,
+      orphans_total: db.prepare('SELECT COUNT(*) AS n FROM orphans').get().n,
+      orphans_sponsored: db.prepare(`SELECT COUNT(*) AS n FROM orphans o WHERE o.status = 'active' AND EXISTS (SELECT 1 FROM donor_orphans d WHERE d.orphan_id = o.id)`).get().n,
+      donors_with_login: db.prepare(`SELECT COUNT(*) AS n FROM users WHERE role = 'donor' AND active = 1 AND password_hash IS NOT NULL`).get().n,
+      batches: batchSummary(db, month),
+      generated_at: new Date().toISOString(),
     };
   });
 
@@ -413,7 +451,7 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
     const txt = (k) => (has(k) ? String(b[k] ?? '').trim() || null : cur[k]);
     const o = {
       orphan_no: String(b.orphan_no ?? cur?.orphan_no ?? '').trim().toUpperCase(),
-      name: String(b.name ?? cur?.name ?? '').trim(),
+      name: tidyName(b.name ?? cur?.name ?? ''),
       name_ar: txt('name_ar'),
       child_phone: has('child_phone') ? cleanChildPhone(b.child_phone) : cur.child_phone,
       guardian_name: txt('guardian_name'),
@@ -456,18 +494,39 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
     return upsertOrphan(ctx.body, ctx.user.id);
   });
   r.put('/api/admin/orphans/:id', admin, (ctx) => upsertOrphan(ctx.body, ctx.user.id, Number(ctx.params.id)));
+  // Delete an orphan. Entries paid only for this orphan are deleted too when `with_entries=1`;
+  // entries shared with other orphans must be edited first so their amounts stay correct.
   r.delete('/api/admin/orphans/:id', admin, (ctx) => {
     const id = Number(ctx.params.id);
-    if (db.prepare('SELECT 1 FROM payment_months WHERE orphan_id = ?').get(id)) fail(409, 'This orphan has payment entries. Mark as inactive instead of deleting.');
-    db.prepare('DELETE FROM orphans WHERE id = ?').run(id);
-    audit(db, ctx.user.id, 'orphan.delete', 'orphan', id, null);
-    return { ok: true };
+    const o = db.prepare('SELECT * FROM orphans WHERE id = ?').get(id);
+    if (!o) fail(404, 'Orphan not found');
+    const entries = db.prepare(`SELECT DISTINCT payment_id AS id FROM payment_months WHERE orphan_id = ?`).all(id).map((x) => x.id);
+    const shared = entries.filter((pid) => db.prepare('SELECT 1 FROM payment_months WHERE payment_id = ? AND orphan_id != ?').get(pid, id));
+    if (shared.length) {
+      fail(409, `${o.orphan_no} is part of entries that also pay for other orphans (#${shared.join(', #')}). Edit those entries to remove ${o.orphan_no} first.`);
+    }
+    if (entries.length && ctx.query.get('with_entries') !== '1') {
+      fail(409, `${o.orphan_no} has ${entries.length} donation entr${entries.length === 1 ? 'y' : 'ies'} (#${entries.join(', #')}). Confirm to delete them as well.`);
+    }
+    tx(db, () => {
+      for (const pid of entries) deletePayment(db, uploadsDir, pid, ctx.user.id);
+      db.prepare('DELETE FROM orphans WHERE id = ?').run(id);
+      audit(db, ctx.user.id, 'orphan.delete', 'orphan', id, { orphan_no: o.orphan_no, name: o.name, entries_deleted: entries.length });
+    });
+    return { ok: true, entries_deleted: entries.length };
+  });
+
+  r.get('/api/admin/orphans/:id/ledger', admin, (ctx) => orphanLedger(db, Number(ctx.params.id)));
+  r.get('/api/admin/orphans/:id/ledger.csv', admin, (ctx) => {
+    const l = orphanLedger(db, Number(ctx.params.id));
+    csv(ctx.res, `ledger-${l.orphan.orphan_no}.csv`, LEDGER_COLUMNS, l.rows);
   });
 
   // Donors
   r.get('/api/admin/donors', admin, () => ({
     donors: db.prepare(`
-      SELECT u.id, u.name, u.email, u.phone, u.city, u.sponsor_code, u.active, u.created_at, (u.password_hash IS NOT NULL) AS can_login,
+      SELECT u.id, u.name, u.email, u.phone, u.city, u.sponsor_code, u.username, u.active, u.created_at, (u.password_hash IS NOT NULL) AS can_login,
+        u.password_is_default, CASE WHEN u.password_is_default = 1 THEN u.default_password END AS issued_password,
         (SELECT GROUP_CONCAT(o.orphan_no, ';') FROM donor_orphans d JOIN orphans o ON o.id = d.orphan_id WHERE d.donor_id = u.id) AS orphan_nos,
         (SELECT COUNT(*) FROM payments p WHERE p.donor_id = u.id AND p.status != 'rejected') AS entries,
         (SELECT COALESCE(SUM(amount),0) FROM payments p WHERE p.donor_id = u.id AND p.status = 'verified') AS verified_total,
@@ -476,9 +535,12 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
   }));
 
   r.post('/api/admin/donors', admin, (ctx) => {
-    const u = createDonor(ctx.body, ctx.user.id);
+    const { password, ...rest } = ctx.body;
+    if (password) validatePassword(password);
+    const u = createDonor(rest, ctx.user.id);
     const missing = assignOrphans(u.id, ctx.body.orphan_nos);
-    return { donor: publicUser(u), missing_orphans: missing };
+    const login = issueLogin(db, u.id, { password: password || undefined });
+    return { donor: publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(u.id)), login, missing_orphans: missing };
   });
 
   r.put('/api/admin/donors/:id', admin, (ctx) => {
@@ -503,14 +565,79 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
     return { ok: true, missing_orphans: missing };
   });
 
+  // Set or reset a donor's username and password. Blank fields follow the foundation's rules
+  // (mobile number 03… or first name; password bua-<orphan code>).
+  r.post('/api/admin/donors/:id/login', admin, (ctx) => {
+    const id = Number(ctx.params.id);
+    const u = db.prepare(`SELECT * FROM users WHERE id = ? AND role = 'donor'`).get(id);
+    if (!u) fail(404, 'Donor not found');
+    const username = String(ctx.body.username || '').trim();
+    const password = String(ctx.body.password || '');
+    if (username) {
+      if (!validUsername(username)) fail(400, 'Username can use letters, numbers, dot, dash or underscore (3–40 characters)');
+      if (db.prepare('SELECT 1 FROM users WHERE username = ? COLLATE NOCASE AND id != ?').get(username, id)) fail(409, `Username ${username} is already taken`);
+    }
+    if (password) validatePassword(password);
+    const login = issueLogin(db, id, { username: username || undefined, password: password || undefined });
+    audit(db, ctx.user.id, 'donor.login_reset', 'user', id, { username: login.username });
+    return { login };
+  });
+  // Kept for older screens: set just the password.
   r.post('/api/admin/donors/:id/password', admin, (ctx) => {
     validatePassword(ctx.body.password);
     const id = Number(ctx.params.id);
-    const res = db.prepare(`UPDATE users SET password_hash = ?, session_version = session_version + 1 WHERE id = ? AND role = 'donor'`).run(hashPassword(ctx.body.password), id);
-    if (!res.changes) fail(404, 'Donor not found');
+    const u = db.prepare(`SELECT * FROM users WHERE id = ? AND role = 'donor'`).get(id);
+    if (!u) fail(404, 'Donor not found');
+    const login = issueLogin(db, id, { username: u.username || undefined, password: ctx.body.password });
     audit(db, ctx.user.id, 'donor.password_reset', 'user', id, null);
-    return { ok: true };
+    return { ok: true, login };
   });
+
+  // Create logins for donors who don't have one (or reset everyone still on an issued password).
+  r.post('/api/admin/donors/logins', admin, (ctx) => {
+    const resetIssued = ctx.body.scope === 'reset_issued';
+    const ids = db.prepare(`SELECT id FROM users WHERE role = 'donor' AND active = 1 AND (password_hash IS NULL ${resetIssued ? 'OR password_is_default = 1' : ''})`).all().map((x) => x.id);
+    tx(db, () => ids.forEach((id) => issueLogin(db, id)));
+    audit(db, ctx.user.id, 'donor.logins_issued', null, null, { count: ids.length, scope: resetIssued ? 'reset_issued' : 'missing' });
+    return { count: ids.length };
+  });
+
+  r.get('/api/admin/export/logins.csv', admin, (ctx) => {
+    const rows = db.prepare(`
+      SELECT u.name, u.sponsor_code, u.phone, u.username, u.default_password AS password,
+        (SELECT GROUP_CONCAT(o.orphan_no, ';') FROM donor_orphans d JOIN orphans o ON o.id = d.orphan_id WHERE d.donor_id = u.id) AS orphan_nos
+      FROM users u WHERE u.role = 'donor' AND u.active = 1 AND u.password_is_default = 1 ORDER BY u.name`).all()
+      .map((x) => ({ ...x, mobile: localPkMobile(x.phone) || x.phone }));
+    csv(ctx.res, 'donor-logins.csv', ['name', 'sponsor_code', 'mobile', 'username', 'password', 'orphan_nos'].map((k) => ({ key: k, label: k })), rows);
+  });
+
+  // Delete a donor. Their donation entries (and receipt images) go too when `with_entries=1`.
+  r.delete('/api/admin/donors/:id', admin, (ctx) => {
+    const id = Number(ctx.params.id);
+    const u = db.prepare(`SELECT * FROM users WHERE id = ? AND role = 'donor'`).get(id);
+    if (!u) fail(404, 'Donor not found');
+    const entries = db.prepare('SELECT id FROM payments WHERE donor_id = ?').all(id).map((x) => x.id);
+    if (entries.length && ctx.query.get('with_entries') !== '1') {
+      fail(409, `${u.name} has ${entries.length} donation entr${entries.length === 1 ? 'y' : 'ies'}. Confirm to delete them as well.`);
+    }
+    tx(db, () => {
+      for (const pid of entries) deletePayment(db, uploadsDir, pid, ctx.user.id);
+      db.prepare('DELETE FROM donor_orphans WHERE donor_id = ?').run(id);
+      db.prepare('DELETE FROM notifications WHERE user_id = ?').run(id);
+      db.prepare('UPDATE audit_log SET user_id = NULL WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM users WHERE id = ?').run(id);
+      audit(db, ctx.user.id, 'donor.delete', 'user', id, { name: u.name, phone: u.phone, entries_deleted: entries.length });
+    });
+    return { ok: true, entries_deleted: entries.length };
+  });
+
+  r.get('/api/admin/donors/:id/ledger', admin, (ctx) => donorLedger(db, Number(ctx.params.id)));
+  r.get('/api/admin/donors/:id/ledger.csv', admin, (ctx) => {
+    const l = donorLedger(db, Number(ctx.params.id));
+    csv(ctx.res, `ledger-${l.donor.name.replace(/[^A-Za-z0-9]+/g, '-')}.csv`, LEDGER_COLUMNS, l.rows);
+  });
+
+  registerBatchRoutes({ r, db, admin, csv, today: () => clock(settings()).today });
 
   // Management users
   r.get('/api/admin/admins', admin, () => ({
@@ -651,8 +778,9 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
     const s = settings();
     const result = {
       kind, dry_run: dryRun, total: rows.length, created: 0, updated: 0, skipped: 0, errors: [], skipped_rows: [],
-      donors_created: 0, sponsors_linked: 0, no_sponsor: 0,
+      donors_created: 0, sponsors_linked: 0, no_sponsor: 0, logins_created: 0,
     };
+    const newDonors = new Set();
 
     // Orphan sheets may carry the sponsor on each row: create/find that donor and link them.
     function linkSponsor(orphanId, row) {
@@ -669,7 +797,8 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
           AND lower(name) = lower(?) AND COALESCE(sponsor_code, '') = ?`).get(name, code || '');
       }
       if (!donor) {
-        donor = createDonor({ name: namedSponsor ? name : `Sponsor ${code || phone}`, phone, city: row.sponsor_area, sponsor_code: code }, ctx.user.id, { allowNoLogin: true });
+        donor = createDonor({ name: namedSponsor ? tidyName(name) : `Sponsor ${code || phone}`, phone, city: row.sponsor_area, sponsor_code: code }, ctx.user.id, { allowNoLogin: true });
+        newDonors.add(donor.id);
         result.donors_created++;
       } else if (code && !String(donor.sponsor_code || '').split(';').includes(code)) {
         db.prepare('UPDATE users SET sponsor_code = ? WHERE id = ?').run(donor.sponsor_code ? `${donor.sponsor_code};${code}` : code, donor.id);
@@ -697,9 +826,12 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
           result.updated++;
           return;
         }
-        const u = createDonor(row, ctx.user.id);
+        const { password, ...rest } = row;
+        const u = createDonor(rest, ctx.user.id);
         const missing = assignOrphans(u.id, row.orphan_nos);
         if (missing.length) fail(400, `Unknown orphan numbers: ${missing.join(', ')}`);
+        issueLogin(db, u.id, { password: password || undefined });
+        result.logins_created++;
         result.created++;
       },
       payments: (row) => {
@@ -726,12 +858,18 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
     const handler = handlers[kind];
     if (!handler) fail(404, 'Unknown import type');
 
-    const run = () => rows.forEach((row, i) => {
-      try { tx(db, () => handler(row)); } catch (e) {
-        if (!(e instanceof HttpError)) throw e;
-        result.errors.push({ row: row._row ?? i + 2, message: e.message });
+    const run = () => {
+      rows.forEach((row, i) => {
+        try { tx(db, () => handler(row)); } catch (e) {
+          if (!(e instanceof HttpError)) throw e;
+          result.errors.push({ row: row._row ?? i + 2, message: e.message });
+        }
+      });
+      // New sponsors get their login once all their orphans are linked (password uses their orphan code).
+      for (const id of newDonors) {
+        if (db.prepare('SELECT 1 FROM users WHERE id = ?').get(id)) { issueLogin(db, id); result.logins_created++; }
       }
-    });
+    };
     if (dryRun) {
       db.exec('BEGIN');
       try { run(); } finally { db.exec('ROLLBACK'); }

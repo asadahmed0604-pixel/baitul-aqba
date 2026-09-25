@@ -30,14 +30,43 @@ function shell() {
       <span class="badge badge-info">Donor</span>
       <span class="spacer"></span>
       <span class="muted small hide-sm">${me.name}</span>
+      <button class="btn btn-sm" id="bell" aria-label="Notifications">🔔 <span id="n-count" class="badge badge-bad hidden"></span></button>
       <button class="btn btn-sm" id="pw">Password</button>
       <button class="btn btn-sm" id="logout">Sign out</button>
     </header>
     <main class="container" id="view"></main>`);
   $('#logout').onclick = signOut;
-  $('#pw').onclick = changePasswordDialog;
+  $('#pw').onclick = () => changePasswordDialog(refreshMe);
+  $('#bell').onclick = openNotifications;
   window.addEventListener('hashchange', route);
   route();
+}
+
+async function refreshMe() {
+  me = (await api.get('/api/auth/me')).user;
+  route();
+}
+
+let notices = { notifications: [], unread: 0 };
+async function loadNotifications() {
+  try { notices = await api.get('/api/donor/notifications'); } catch { /* keep last */ }
+  const c = $('#n-count');
+  if (c) { c.textContent = notices.unread; c.classList.toggle('hidden', !notices.unread); }
+  return notices;
+}
+
+async function markRead(ids) {
+  await api.post('/api/donor/notifications/read', ids ? { ids } : {});
+  await loadNotifications();
+}
+
+async function openNotifications() {
+  const { notifications } = await loadNotifications();
+  modal('Notifications', notifications.length ? html`<ul class="flag-list">${notifications.map((n) => html`
+    <li class="${n.kind === 'verified' ? 'note-ok' : n.kind === 'rejected' ? 'note-bad' : ''}" style="${n.read_at ? 'opacity:.7' : ''}">
+      <strong>${n.title}</strong> <span class="small">· ${fmtDate(n.created_at)}</span><div>${n.message}</div></li>`)}</ul>`
+    : html`<div class="empty">No notifications yet</div>`, { onClose: () => route() });
+  if (notices.unread) markRead();
 }
 
 function route() {
@@ -50,10 +79,13 @@ function route() {
 async function dashboard() {
   const view = $('#view');
   view.innerHTML = '<div class="empty">Loading…</div>';
-  const [{ orphans, month }, { payments }] = await Promise.all([api.get('/api/donor/orphans'), api.get('/api/donor/payments')]);
+  const [{ orphans, month }, { payments }, { notifications }] = await Promise.all([api.get('/api/donor/orphans'), api.get('/api/donor/payments'), loadNotifications()]);
   const total = payments.filter((p) => p.status === 'verified').reduce((s, p) => s + p.amount, 0);
   const pending = payments.filter((p) => p.status === 'pending').length;
-  const thisMonthPaid = orphans.filter((o) => o.months.some((m) => m.month === month)).length;
+  const rejected = payments.filter((p) => p.status === 'rejected').length;
+  const thisMonthPaid = orphans.filter((o) => o.months.some((m) => m.month === month && m.status === 'verified')).length;
+  const thisMonthReview = orphans.filter((o) => o.months.some((m) => m.month === month && m.status === 'pending') && !o.months.some((m) => m.month === month && m.status === 'verified')).length;
+  const unread = notifications.filter((n) => !n.read_at);
 
   view.innerHTML = String(html`
     <div class="page-head">
@@ -64,10 +96,15 @@ async function dashboard() {
       <a class="btn btn-primary" href="#new">＋ New donation entry</a>
     </div>
 
+    ${me.must_change_password ? html`<div class="alert alert-warn">You're signed in with the password the foundation gave you. <button class="btn btn-sm" id="change-pw">Choose your own password</button></div>` : ''}
+    ${unread.filter((n) => n.kind === 'rejected').map((n) => html`<div class="alert alert-danger" data-note="${n.id}"><strong>${n.title}.</strong> ${n.message}
+      <div class="actions" style="justify-content:flex-start;margin-top:8px"><a class="btn btn-sm btn-primary" href="#new">Submit a new receipt</a><button class="btn btn-sm" data-dismiss="${n.id}">Dismiss</button></div></div>`)}
+    ${unread.filter((n) => n.kind === 'verified').length ? html`<div class="alert alert-ok">✓ ${unread.filter((n) => n.kind === 'verified').length === 1 ? unread.find((n) => n.kind === 'verified').message : `${unread.filter((n) => n.kind === 'verified').length} of your entries were verified. Thank you.`} <button class="btn btn-sm" data-dismiss="${unread.filter((n) => n.kind === 'verified').map((n) => n.id).join(',')}">OK</button></div>` : ''}
+
     <div class="grid grid-3">
       <div class="card stat accent"><div class="label">Verified donations</div><div class="value">${money(total)}</div><div class="sub">all time</div></div>
-      <div class="card stat warn"><div class="label">Awaiting review</div><div class="value">${pending}</div><div class="sub">entries</div></div>
-      <div class="card stat"><div class="label">${cfg.monthLabel}</div><div class="value">${thisMonthPaid} / ${orphans.length}</div><div class="sub">of your orphans paid for this month</div></div>
+      <div class="card stat warn"><div class="label">Awaiting review</div><div class="value">${pending}</div><div class="sub">entries${rejected ? ` · ${rejected} rejected` : ''}</div></div>
+      <div class="card stat"><div class="label">${cfg.monthLabel}</div><div class="value">${thisMonthPaid} / ${orphans.length}</div><div class="sub">of your orphans verified for this month${thisMonthReview ? ` · ${thisMonthReview} under review` : ''}</div></div>
     </div>
 
     ${cfg.officialAccounts.length ? html`
@@ -102,6 +139,8 @@ async function dashboard() {
     </div>`);
 
   $('#export')?.addEventListener('click', () => download('/api/donor/export.csv'));
+  $('#change-pw', view)?.addEventListener('click', () => changePasswordDialog(refreshMe));
+  $$('[data-dismiss]', view).forEach((b) => { b.onclick = async () => { await markRead(b.dataset.dismiss.split(',').map(Number)); route(); }; });
   $$('tr[data-id]', view).forEach((tr) => {
     tr.onclick = () => showEntry(payments.find((p) => p.id === Number(tr.dataset.id)));
   });

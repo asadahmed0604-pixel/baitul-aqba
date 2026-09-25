@@ -320,15 +320,21 @@ test('imports the foundation orphan sheet (.xlsx) with sponsors', async () => {
   assert.equal(shafqat.sponsor_code, 'SP11');
   assert.equal(shafqat.orphan_nos, 'OR001;OR002');
 
-  // An imported sponsor registers with their phone number and gets the existing record with their orphans.
-  const claim = new Client();
-  const reg = await claim.post('/api/auth/register', { name: 'Imran', phone: '0320-4000455', password: 'claimed1' });
-  assert.equal(reg.status, 200, JSON.stringify(reg.data));
-  assert.equal(reg.data.claimed, true);
-  assert.equal(reg.data.user.name, 'Imran Hamza');
-  assert.deepEqual((await claim.get('/api/donor/orphans')).data.orphans.map((o) => o.orphan_no), ['OR005']);
-  // …but only once: a second registration with that number is refused.
-  assert.equal((await new Client().post('/api/auth/register', { name: 'X', phone: '03204000455', password: 'another1' })).status, 409);
+  // Imported sponsors get a login straight away: mobile number 03… and password bua-<orphan code>.
+  assert.equal(real.data.logins_created, 3);
+  const imran = new Client();
+  const li = await imran.post('/api/auth/login', { login: '03204000455', password: 'bua-or005', role: 'donor' });
+  assert.equal(li.status, 200, JSON.stringify(li.data));
+  assert.equal(li.data.user.username, '03204000455');
+  assert.equal(li.data.user.must_change_password, true);
+  assert.deepEqual((await imran.get('/api/donor/orphans')).data.orphans.map((o) => o.orphan_no), ['OR005']);
+  // Registering again with that number explains how to sign in instead.
+  const again409 = await new Client().post('/api/auth/register', { name: 'X', phone: '0320-4000455', password: 'another1' });
+  assert.equal(again409.status, 409);
+  assert.match(again409.data.error, /bua-/);
+  // Changing the password clears the "issued password" state.
+  assert.equal((await imran.post('/api/auth/password', { current: 'bua-or005', next: 'mine-now' })).status, 200);
+  assert.equal((await imran.get('/api/auth/me')).data.user.must_change_password, false);
 
   // The sponsor can later sign in with the local number format once a password is set.
   await adminC.post(`/api/admin/donors/${shafqat.id}/password`, { password: 'sponsor1' });
@@ -339,4 +345,104 @@ test('imports the foundation orphan sheet (.xlsx) with sponsors', async () => {
   const again = await send(false);
   assert.deepEqual([again.data.created, again.data.updated, again.data.donors_created], [0, 5, 0]);
   assert.equal((await adminC.get('/api/admin/orphans')).data.orphans.find((o) => o.orphan_no === 'OR002').monthly_amount, 6000);
+});
+
+test('login rules: mobile number or first name, bua-<orphan code>, reset by management', async () => {
+  // Donors outside Pakistan get their first name as username.
+  const r = await adminC.post('/api/admin/donors', { name: 'Dr Rizwana Khan', phone: '+1 504 919 3426', orphan_nos: 'OR003' });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.deepEqual(r.data.login, { username: 'rizwana', password: 'bua-or003' });
+  const r2 = await adminC.post('/api/admin/donors', { name: 'Rizwana Bibi', phone: '+44 7700 900123', orphan_nos: 'OR004' });
+  assert.equal(r2.data.login.username, 'rizwana2');
+  const c = new Client();
+  assert.equal((await c.post('/api/auth/login', { login: 'Rizwana', password: 'bua-or003' })).status, 200);
+
+  // Management resets the username and password.
+  const id = r.data.donor.id;
+  const reset = await adminC.post(`/api/admin/donors/${id}/login`, { username: 'rizwana.k', password: 'fresh-pass' });
+  assert.deepEqual(reset.data.login, { username: 'rizwana.k', password: 'fresh-pass' });
+  assert.equal((await c.get('/api/auth/me')).data.user, null, 'old session ends after a reset');
+  assert.equal((await new Client().post('/api/auth/login', { login: 'rizwana.k', password: 'fresh-pass' })).status, 200);
+  assert.equal((await adminC.post(`/api/admin/donors/${id}/login`, { username: 'rizwana2' })).status, 409);
+  // Blank fields go back to the rules.
+  assert.deepEqual((await adminC.post(`/api/admin/donors/${id}/login`, {})).data.login, { username: 'rizwana', password: 'bua-or003' });
+
+  const csv = await adminC.get('/api/admin/export/logins.csv');
+  assert.match(csv.data, /Dr Rizwana Khan,,\+15049193426,rizwana,bua-or003,OR003/);
+
+  // Bulk: donors without a login get one.
+  const bulk = await adminC.post('/api/admin/donors/logins', {});
+  assert.equal(bulk.status, 200);
+  const { donors } = (await adminC.get('/api/admin/donors')).data;
+  assert.ok(donors.filter((d) => d.active).every((d) => d.can_login));
+});
+
+test('rejected receipts notify the donor', async () => {
+  const d = new Client();
+  await d.post('/api/auth/login', { login: '03001234567', password: 'pass1234' });
+  const before = (await d.get('/api/donor/notifications')).data.unread;
+  const p = (await adminC.get('/api/admin/payments?q=IMP-1')).data.payments[0];
+  // IMP-1 belongs to Bilal; use one of Ahmed's entries instead.
+  const mine = (await d.get('/api/donor/payments')).data.payments.find((x) => x.status !== 'rejected');
+  assert.ok(mine && p);
+  await adminC.post(`/api/admin/payments/${mine.id}/reject`, { note: 'Receipt is from last month' });
+  const n = (await d.get('/api/donor/notifications')).data;
+  assert.equal(n.unread, before + 1);
+  assert.equal(n.notifications[0].kind, 'rejected');
+  assert.match(n.notifications[0].message, /Receipt is from last month/);
+  await d.post('/api/donor/notifications/read', {});
+  assert.equal((await d.get('/api/donor/notifications')).data.unread, 0);
+  await adminC.post(`/api/admin/payments/${mine.id}/reopen`, {});
+});
+
+test('batches, ledgers, dashboard and deleting', async () => {
+  // A verified payment for OR001 this month.
+  const d = new Client();
+  await d.post('/api/auth/login', { login: '03204000455', password: 'mine-now' });
+  const pay = await d.req('POST', '/api/donor/payments', undefined, {
+    form: receiptForm({ orphan_nos: 'OR005', months: month, amount: 7000, payment_date: today, ocr_text: ocr(today, '7,000', 'TX-BATCH-1'), ocr_confidence: 90, sharpness: 150 }, png(900, 900, 'batch')),
+  });
+  assert.equal(pay.status, 200, JSON.stringify(pay.data));
+  await adminC.post(`/api/admin/payments/${pay.data.payment.id}/verify`, {});
+
+  const elig = (await adminC.get(`/api/admin/batches/eligible?month=${month}`)).data.orphans;
+  const or5 = elig.find((o) => o.orphan_no === 'OR005');
+  assert.equal(or5.amount, 7000);
+  const created = await adminC.post('/api/admin/batches', { month, orphan_ids: [or5.id], area: 'Khan Younis' });
+  assert.equal(created.status, 200, JSON.stringify(created.data));
+  const b = created.data.batch;
+  assert.equal(b.status, 'ready');
+  assert.equal(b.total, 7000);
+  // An orphan-month can only be in one batch.
+  assert.equal((await adminC.post('/api/admin/batches', { month, orphan_ids: [or5.id] })).status, 400);
+
+  let dash = (await adminC.get(`/api/admin/dashboard?month=${month}`)).data;
+  assert.equal(dash.batches.ready.total, 7000);
+  const upd = await adminC.put(`/api/admin/batches/${b.id}`, { status: 'transferred', transfer_ref: 'WU-123' });
+  assert.equal(upd.data.batch.transfer_amount, 7000);
+  assert.equal(upd.data.batch.transfer_date, today);
+  dash = (await adminC.get(`/api/admin/dashboard?month=${month}`)).data;
+  assert.equal(dash.batches.transferred.total, 7000);
+  assert.equal(dash.batches.ready.total, 0);
+  assert.match((await adminC.get(`/api/admin/batches/${b.id}/export`)).data, /OR005/);
+
+  // Ledgers
+  const ledger = (await adminC.get(`/api/admin/orphans/${or5.id}/ledger`)).data;
+  const row = ledger.rows.find((x) => x.transaction_ref === 'TX-BATCH-1');
+  assert.equal(row.batch_status, 'transferred');
+  assert.equal(ledger.totals.transferred, 7000);
+  const donorId = (await adminC.get('/api/admin/donors')).data.donors.find((x) => x.username === '03204000455').id;
+  const dl = (await adminC.get(`/api/admin/donors/${donorId}/ledger`)).data;
+  assert.equal(dl.totals.verified, 7000);
+  assert.match((await adminC.get(`/api/admin/donors/${donorId}/ledger.csv`)).data, /month,orphan_no,orphan_name/);
+
+  // Deleting: needs confirmation when entries exist, then removes them.
+  const del1 = await adminC.req('DELETE', `/api/admin/donors/${donorId}`);
+  assert.equal(del1.status, 409);
+  const del2 = await adminC.req('DELETE', `/api/admin/donors/${donorId}?with_entries=1`);
+  assert.equal(del2.status, 200, JSON.stringify(del2.data));
+  assert.equal((await adminC.get('/api/admin/payments?q=TX-BATCH-1&status=')).data.total, 0);
+  const or2 = (await adminC.get('/api/admin/orphans')).data.orphans.find((o) => o.orphan_no === 'OR002');
+  assert.equal((await adminC.req('DELETE', `/api/admin/orphans/${or2.id}`)).status, 200);
+  assert.ok(!(await adminC.get('/api/admin/orphans')).data.orphans.some((o) => o.orphan_no === 'OR002'));
 });

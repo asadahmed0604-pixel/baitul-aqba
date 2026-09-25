@@ -68,3 +68,15 @@ test('csv round trip and formula neutralising', () => {
   assert.deepEqual(rows, [{ a: 'x,"y"', b_b: '=HYPERLINK(1)' }, { a: '-5', b_b: 'line\nbreak' }]);
   assert.match(out, /'=HYPERLINK/);
 });
+
+test('english names and username rules', async () => {
+  const { tidyName } = await import('../src/app.js');
+  const { firstNameBase, localPkMobile } = await import('../src/logins.js');
+  assert.equal(tidyName('  ahmad ramzi   Shahir al-saami '), 'Ahmad Ramzi Shahir Al-Saami');
+  assert.equal(tidyName('Maram Tariq Mohammed Al-Farra'), 'Maram Tariq Mohammed Al-Farra');
+  assert.equal(firstNameBase('Dr Rizwana Khan'), 'rizwana');
+  assert.equal(firstNameBase('Al-Ghurba'), 'alghurba');
+  assert.equal(firstNameBase('Mrs. Atifa'), 'atifa');
+  assert.equal(localPkMobile('+923115959391'), '03115959391');
+  assert.equal(localPkMobile('+15049193426'), null);
+});

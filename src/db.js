@@ -94,6 +94,41 @@ CREATE TABLE IF NOT EXISTS payment_months (
 );
 CREATE INDEX IF NOT EXISTS pm_orphan_month ON payment_months(orphan_id, month);
 CREATE INDEX IF NOT EXISTS pm_month ON payment_months(month);
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  payment_id INTEGER,
+  read_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS notifications_user ON notifications(user_id, read_at);
+-- A batch groups paid orphan-months so the money can be transferred to the orphans' area.
+CREATE TABLE IF NOT EXISTS batches (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  month TEXT NOT NULL,
+  area TEXT,
+  status TEXT NOT NULL DEFAULT 'collecting' CHECK (status IN ('collecting','ready','transferred')),
+  notes TEXT,
+  transfer_date TEXT,
+  transfer_ref TEXT,
+  transfer_amount REAL,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS batch_items (
+  id INTEGER PRIMARY KEY,
+  batch_id INTEGER NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+  orphan_id INTEGER NOT NULL REFERENCES orphans(id) ON DELETE CASCADE,
+  month TEXT NOT NULL,
+  amount REAL NOT NULL DEFAULT 0,
+  UNIQUE (orphan_id, month)
+);
+CREATE INDEX IF NOT EXISTS batch_items_batch ON batch_items(batch_id);
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -123,12 +158,16 @@ const MIGRATIONS = [
   ['orphans', 'name_ar', 'TEXT'],
   ['orphans', 'child_phone', 'TEXT'],
   ['users', 'sponsor_code', 'TEXT'],
+  ['users', 'username', 'TEXT'],
+  ['users', 'default_password', 'TEXT'], // kept only while the donor still uses the password the foundation issued
+  ['users', 'password_is_default', 'INTEGER NOT NULL DEFAULT 0'],
 ];
 function migrate(db) {
   for (const [table, column, type] of MIGRATIONS) {
     const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
     if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
   }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_username ON users(username COLLATE NOCASE)');
 }
 
 let savepointSeq = 0;

@@ -18,6 +18,7 @@ const NAV = [
   ['section', 'Records'],
   ['orphans', '📇', 'Orphans'],
   ['donors', '🤝', 'Donors'],
+  ['batches', '💸', 'Transfer batches'],
   ['data', '⇅', 'Import / Export'],
   ['section', 'Administration'],
   ['settings', '⚙️', 'Settings'],
@@ -74,6 +75,10 @@ async function refreshPendingCount() {
 }
 
 const PAGES = {};
+// Keep the dashboard current: re-load it whenever the tab becomes visible again.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && me && (location.hash.slice(1) || 'dashboard').startsWith('dashboard') && !document.querySelector('.modal-backdrop')) route();
+});
 function route() {
   const [name, qs] = (location.hash.slice(1) || 'dashboard').split('?');
   const page = PAGES[name] ? name : 'dashboard';
@@ -137,10 +142,19 @@ PAGES.dashboard = async (view, qs) => {
     </div>
     ${d.pending_all ? html`<div class="alert alert-warn">${d.pending_all} entr${d.pending_all === 1 ? 'y is' : 'ies are'} waiting for review${d.flagged_pending ? html`, <strong>${d.flagged_pending} with warnings</strong>` : ''}. <a href="#entries?status=pending">Review now →</a></div>` : ''}
     <div class="grid grid-4">
-      <div class="card stat accent"><div class="label">Verified this month</div><div class="value">${money(d.verified.total)}</div><div class="sub">${d.verified.n} receipts</div></div>
-      <div class="card stat warn"><div class="label">Pending review</div><div class="value">${money(d.pending.total)}</div><div class="sub">${d.pending.n} receipts</div></div>
-      <div class="card stat"><div class="label">Orphans paid for ${fmtMonth(month)}</div><div class="value">${d.coverage.paid} / ${d.coverage.orphans}</div><div class="sub">${d.coverage.partial} partial · ${d.coverage.unpaid} unpaid</div></div>
-      <div class="card stat danger"><div class="label">Rejected</div><div class="value">${d.rejected.n}</div><div class="sub">${d.donors} donors · ${d.orphans} active orphans</div></div>
+      <div class="card stat accent"><div class="label">Verified · receipts in ${fmtMonth(month)}</div><div class="value">${money(d.verified.total)}</div><div class="sub">${d.verified.n} receipts · ${d.rejected.n} rejected</div></div>
+      <div class="card stat warn"><div class="label">Waiting for review (all months)</div><div class="value">${money(d.pending_all_amount)}</div><div class="sub">${d.pending_all} entries</div></div>
+      <div class="card stat"><div class="label">Orphans paid for ${fmtMonth(month)} (verified)</div><div class="value">${d.coverage.paid} / ${d.coverage.orphans}</div><div class="sub">${d.coverage.partial} partial · ${d.coverage.unpaid} unpaid${d.coverage.awaiting_review ? ` · ${d.coverage.awaiting_review} awaiting review` : ''}</div></div>
+      <div class="card stat"><div class="label">Orphans &amp; donors</div><div class="value">${d.orphans}</div><div class="sub">${d.orphans_sponsored} sponsored · ${d.donors} donors · ${d.donors_with_login} can sign in</div></div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <div class="card-head"><h3>Transfers to areas</h3><a class="btn btn-sm" href="#batches">Batches</a></div>
+      <div class="grid grid-4">
+        <div class="stat" style="padding:0"><div class="label">Paid for ${fmtMonth(month)}, not in a batch</div><div class="value">${money(d.batches.unbatched.total)}</div><div class="sub">${d.batches.unbatched.orphans} orphans</div></div>
+        <div class="stat" style="padding:0"><div class="label">Donations pending</div><div class="value">${money(d.batches.collecting.total)}</div><div class="sub">${d.batches.collecting.batches} batches · ${d.batches.collecting.orphans} orphans</div></div>
+        <div class="stat" style="padding:0"><div class="label">Received · transfer to area pending</div><div class="value" style="color:var(--warn)">${money(d.batches.ready.total)}</div><div class="sub">${d.batches.ready.batches} batches · ${d.batches.ready.orphans} orphans</div></div>
+        <div class="stat" style="padding:0"><div class="label">Transferred to areas</div><div class="value" style="color:var(--ok)">${money(d.batches.transferred.total)}</div><div class="sub">${d.batches.transferred.batches} batches · ${d.batches.transferred.orphans} orphans</div></div>
+      </div>
     </div>
     <div class="grid grid-2" style="margin-top:16px">
       <div class="card" style="margin:0">
@@ -169,6 +183,7 @@ PAGES.dashboard = async (view, qs) => {
       <div id="recent">${entriesTable(d.recent, { compact: true })}</div>
     </div>`);
   $('#dash-month').onchange = (e) => { location.hash = `dashboard?month=${e.target.value}`; };
+  view.insertAdjacentHTML('beforeend', String(html`<p class="muted small">Updated ${new Date(d.generated_at).toLocaleTimeString()} · refreshes when you come back to this tab</p>`));
   bindEntryRows($('#recent'), d.recent, route);
 };
 
@@ -487,40 +502,47 @@ PAGES.orphans = async (view) => {
       <div class="grow"><h1>Orphans</h1><p class="muted">${orphans.filter((o) => o.status === 'active').length} active · ${orphans.length} total</p></div>
       <button class="btn" id="exp">⬇ Export</button><a class="btn" href="#data">⇪ Import</a><button class="btn btn-primary" id="add">＋ Add orphan</button>
     </div>
-    <div class="filters"><label style="flex:1">Search<input id="o-q" placeholder="Number, name (English or Arabic), phone, sponsor"></label></div>
+    <div class="filters"><label style="flex:1">Search<input id="o-q" placeholder="Orphan no., name, phone, sponsor"></label></div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Orphan no.</th><th>Name</th><th>Child phone</th><th>Guardian</th><th>City</th><th class="num">Monthly</th><th>Sponsor(s)</th><th>Paid until</th><th>Status</th></tr></thead>
+      <thead><tr><th>Orphan no.</th><th>Name</th><th>Child phone</th><th>City / area</th><th class="num">Monthly</th><th>Sponsor(s)</th><th>Paid until</th><th>Status</th><th></th></tr></thead>
       <tbody id="o-body">${orphans.map((o) => html`<tr class="clickable" data-id="${o.id}" data-text="${[o.orphan_no, o.name, o.name_ar, o.child_phone, o.guardian_name, o.sponsors, o.city].join(' ').toLowerCase()}">
-        <td class="mono">${o.orphan_no}</td><td>${o.name}${o.name_ar ? html`<div class="muted small" dir="rtl" lang="ar">${o.name_ar}</div>` : ''}</td><td class="mono small nowrap">${o.child_phone || ''}</td><td>${o.guardian_name || ''}</td><td>${o.city || ''}</td><td class="num">${money(o.monthly_amount)}</td>
+        <td class="mono">${o.orphan_no}</td><td>${o.name}</td><td class="mono small nowrap">${o.child_phone || ''}</td><td>${o.city || ''}</td><td class="num">${money(o.monthly_amount)}</td>
         <td class="small">${o.sponsors || html`<span class="muted">—</span>`}</td>
         <td>${o.paid_until ? html`<span class="${o.paid_until < cfg.month ? '' : 'badge badge-ok'}">${fmtMonth(o.paid_until)}</span>` : html`<span class="muted">—</span>`}</td>
-        <td><span class="badge ${o.status === 'active' ? 'badge-ok' : 'badge-muted'}">${o.status}</span></td></tr>`)}</tbody>
-    </table>${orphans.length ? '' : html`<div class="empty">No orphans yet. Add them one by one or import a CSV file.</div>`}</div>`);
+        <td><span class="badge ${o.status === 'active' ? 'badge-ok' : 'badge-muted'}">${o.status}</span></td>
+        <td data-noopen><button class="btn btn-sm" data-ledger="${o.id}">Ledger</button></td></tr>`)}</tbody>
+    </table>${orphans.length ? '' : html`<div class="empty">No orphans yet. Add them one by one or import your Excel sheet.</div>`}</div>`);
   $('#o-q').oninput = (e) => {
     const q = e.target.value.toLowerCase();
     $$('#o-body tr').forEach((tr) => { tr.style.display = tr.dataset.text.includes(q) ? '' : 'none'; });
   };
   $('#add').onclick = () => orphanForm();
   $('#exp').onclick = () => download('/api/admin/export/orphans.csv');
-  $$('#o-body tr').forEach((tr) => { tr.onclick = () => orphanForm(orphans.find((o) => o.id === Number(tr.dataset.id))); });
+  $$('#o-body tr').forEach((tr) => {
+    tr.onclick = (e) => {
+      if (e.target.closest('[data-ledger]')) { orphanLedger(Number(tr.dataset.id)); return; }
+      if (e.target.closest('[data-noopen]')) return;
+      orphanForm(orphans.find((o) => o.id === Number(tr.dataset.id)));
+    };
+  });
 };
 
 function orphanForm(o = {}) {
-  const m = modal(o.id ? `Edit orphan ${o.orphan_no}` : 'Add orphan', html`
+  const m = modal(o.id ? `Orphan ${o.orphan_no}` : 'Add orphan', html`
     <form class="form-grid">
-      <label>Orphan number<input name="orphan_no" required value="${o.orphan_no || ''}" placeholder="BUA-001"></label>
+      <label>Orphan number<input name="orphan_no" required value="${o.orphan_no || ''}" placeholder="OR001"></label>
       <label>Monthly sponsorship (${cfg.currency})<input name="monthly_amount" inputmode="decimal" value="${o.monthly_amount ?? ''}"></label>
-      <label>Name<input name="name" required value="${o.name || ''}"></label>
-      <label>Name (Arabic)<input name="name_ar" dir="rtl" lang="ar" value="${o.name_ar || ''}"></label>
+      <label>Name (English)<input name="name" required value="${o.name || ''}"></label>
       <label>Child / family phone<input name="child_phone" inputmode="tel" value="${o.child_phone || ''}"></label>
       <label>Guardian name<input name="guardian_name" value="${o.guardian_name || ''}"></label>
+      <label>City / area <span class="hint">used for transfer batches</span><input name="city" value="${o.city || ''}"></label>
       <label>Date of birth<input type="date" name="date_of_birth" value="${o.date_of_birth || ''}"></label>
-      <label>City<input name="city" value="${o.city || ''}"></label>
       <label>Status<select name="status"><option value="active">Active</option><option value="inactive" ${o.status === 'inactive' ? 'selected' : ''}>Inactive</option></select></label>
       <label class="full">Notes<textarea name="notes" rows="2">${o.notes || ''}</textarea></label>
+      ${o.name_ar ? html`<p class="full muted small">Name in the original sheet (Arabic): <span dir="rtl" lang="ar">${o.name_ar}</span></p>` : ''}
       <div class="form-error full" role="alert"></div>
       <div class="full actions" style="justify-content:space-between">
-        ${o.id ? html`<button type="button" class="btn btn-sm" id="del" style="color:var(--danger)">Delete</button>` : html`<span></span>`}
+        ${o.id ? html`<span style="display:flex;gap:8px"><button type="button" class="btn btn-sm" id="del" style="color:var(--danger)">Delete orphan</button><button type="button" class="btn btn-sm" id="ledger">Ledger</button></span>` : html`<span></span>`}
         <span><button type="button" class="btn" data-close>Cancel</button> <button class="btn btn-primary" type="submit">Save</button></span></div>
     </form>`);
   onSubmit($('form', m.el), async (e) => {
@@ -530,28 +552,89 @@ function orphanForm(o = {}) {
     toast('Orphan saved');
     route();
   });
-  $('#del', m.el)?.addEventListener('click', async () => {
-    if (!(await confirmDialog(`Delete orphan ${o.orphan_no}?`, { danger: true, okLabel: 'Delete' }))) return;
-    try { await api.del(`/api/admin/orphans/${o.id}`); m.close(); toast('Deleted'); route(); } catch (err) { toast(err.message, 'error'); }
-  });
+  $('#ledger', m.el)?.addEventListener('click', () => { m.close(); orphanLedger(o.id); });
+  $('#del', m.el)?.addEventListener('click', () => deleteRecord(`/api/admin/orphans/${o.id}`, `orphan ${o.orphan_no} (${o.name})`, m));
+}
+
+/** Delete with confirmation; if the record has donation entries, confirm a second time before removing them too. */
+async function deleteRecord(url, label, parentModal) {
+  if (!(await confirmDialog(`Delete ${label}? This cannot be undone.`, { danger: true, okLabel: 'Delete' }))) return;
+  try {
+    await api.del(url);
+  } catch (err) {
+    if (err.status !== 409 || !/Confirm/.test(err.message)) { toast(err.message, 'error'); return; }
+    if (!(await confirmDialog(`${err.message} Their receipts will be removed from reports.`, { danger: true, okLabel: 'Delete everything' }))) return;
+    try { await api.del(`${url}?with_entries=1`); } catch (e2) { toast(e2.message, 'error'); return; }
+  }
+  parentModal?.close();
+  toast('Deleted');
+  route();
+}
+
+function ledgerTable(l, { showOrphan, showDonor }) {
+  if (!l.rows.length) return html`<div class="empty">No donations recorded yet</div>`;
+  return html`<div class="table-wrap"><table>
+    <thead><tr><th>Month</th>${showOrphan ? html`<th>Orphan</th>` : ''}${showDonor ? html`<th>Donor</th>` : ''}<th class="num">Amount</th><th>Status</th><th class="num">Verified total</th><th>Receipt</th><th>Transfer</th></tr></thead>
+    <tbody>${l.rows.map((r) => html`<tr>
+      <td class="nowrap">${fmtMonth(r.month)}</td>
+      ${showOrphan ? html`<td><span class="mono">${r.orphan_no}</span> ${r.orphan_name}</td>` : ''}
+      ${showDonor ? html`<td>${r.donor_name}${r.sponsor_code ? html` <span class="muted small">${r.sponsor_code}</span>` : ''}</td>` : ''}
+      <td class="num">${money(r.amount)}</td><td>${statusBadge(r.status)}</td><td class="num">${money(r.verified_balance)}</td>
+      <td class="small">#${r.entry_id} · ${fmtDate(r.payment_date)}<div class="muted mono">${r.transaction_ref || ''}</div></td>
+      <td class="small">${r.batch_name ? html`${r.batch_name}<div class="muted">${r.batch_status_label}${r.transfer_date ? ` · ${fmtDate(r.transfer_date)}` : ''}</div>` : html`<span class="muted">not in a batch</span>`}</td>
+    </tr>`)}</tbody></table></div>`;
+}
+
+const ledgerTotals = (t) => html`<div class="grid grid-4" style="margin-bottom:14px">
+  <div class="stat" style="padding:0"><div class="label">Verified</div><div class="value">${money(t.verified)}</div><div class="sub">${t.months_verified} orphan-months</div></div>
+  <div class="stat" style="padding:0"><div class="label">Waiting for review</div><div class="value">${money(t.pending)}</div></div>
+  <div class="stat" style="padding:0"><div class="label">Transferred to area</div><div class="value">${money(t.transferred)}</div></div>
+  <div class="stat" style="padding:0"><div class="label">Rejected</div><div class="value">${money(t.rejected)}</div></div></div>`;
+
+async function orphanLedger(id) {
+  const l = await api.get(`/api/admin/orphans/${id}/ledger`);
+  const m = modal(`Ledger · ${l.orphan.orphan_no} ${l.orphan.name}`, html`
+    <p class="muted">Sponsor(s): ${l.sponsors.length ? l.sponsors.map((s) => `${s.name}${s.sponsor_code ? ` (${s.sponsor_code})` : ''}`).join(', ') : 'none'}${l.orphan.monthly_amount ? ` · monthly ${money(l.orphan.monthly_amount)}` : ''}</p>
+    ${ledgerTotals(l.totals)}
+    ${ledgerTable(l, { showDonor: true })}
+    <div class="actions"><button class="btn" data-close>Close</button><button class="btn btn-primary" id="led-exp">⬇ Export ledger (Excel/CSV)</button></div>`, { wide: true });
+  $('#led-exp', m.el).onclick = () => download(`/api/admin/orphans/${id}/ledger.csv`);
+}
+
+async function donorLedger(id) {
+  const l = await api.get(`/api/admin/donors/${id}/ledger`);
+  const m = modal(`Ledger · ${l.donor.name}`, html`
+    <p class="muted">${[l.donor.sponsor_code, l.donor.phone, l.donor.username ? `username ${l.donor.username}` : ''].filter(Boolean).join(' · ')} · Orphans: ${l.orphans.map((o) => o.orphan_no).join(', ') || 'none'}</p>
+    ${ledgerTotals(l.totals)}
+    ${ledgerTable(l, { showOrphan: true })}
+    <div class="actions"><button class="btn" data-close>Close</button><button class="btn btn-primary" id="led-exp">⬇ Export ledger (Excel/CSV)</button></div>`, { wide: true });
+  $('#led-exp', m.el).onclick = () => download(`/api/admin/donors/${id}/ledger.csv`);
 }
 
 // ---- Donors -------------------------------------------------------------------
 
 PAGES.donors = async (view) => {
   const { donors } = await api.get('/api/admin/donors');
+  const noLogin = donors.filter((d) => d.active && !d.can_login).length;
   view.innerHTML = String(html`
     <div class="page-head">
-      <div class="grow"><h1>Donors</h1><p class="muted">${donors.length} donors</p></div>
-      <button class="btn" id="exp">⬇ Export</button><a class="btn" href="#data">⇪ Import</a><button class="btn btn-primary" id="add">＋ Add donor</button>
+      <div class="grow"><h1>Donors</h1><p class="muted">${donors.length} donors · ${donors.filter((d) => d.can_login).length} can sign in${noLogin ? ` · ${noLogin} without a login` : ''}</p></div>
+      <button class="btn" id="exp">⬇ Export</button><button class="btn" id="exp-logins">⬇ Login list</button>
+      ${noLogin ? html`<button class="btn" id="make-logins">Create ${noLogin} missing logins</button>` : ''}
+      <a class="btn" href="#data">⇪ Import</a><button class="btn btn-primary" id="add">＋ Add donor</button>
     </div>
-    <div class="filters"><label style="flex:1">Search<input id="d-q" placeholder="Name, phone, email, SP code, orphan no."></label></div>
+    <div class="alert alert-info small">Donors sign in with their <strong>mobile number (03…)</strong>, or their <strong>first name</strong> if their number is outside Pakistan. The password the foundation issues is <strong>bua-</strong> followed by their orphan code, e.g. <span class="mono">bua-or001</span>. Donors are asked to change it after signing in.</div>
+    <div class="filters"><label style="flex:1">Search<input id="d-q" placeholder="Name, phone, username, SP code, orphan no."></label></div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Name</th><th>SP code</th><th>Phone / email</th><th>City</th><th>Orphans</th><th class="num">Entries</th><th class="num">Verified total</th><th>Last receipt</th><th>Login</th></tr></thead>
-      <tbody id="d-body">${donors.map((d) => html`<tr class="clickable" data-id="${d.id}" data-text="${[d.name, d.phone, d.email, d.sponsor_code, d.orphan_nos, d.city].join(' ').toLowerCase()}">
-        <td>${d.name}${d.active ? '' : html` <span class="badge badge-muted">inactive</span>`}</td><td class="mono small">${(d.sponsor_code || '').split(';').join(', ')}</td><td>${d.phone || ''}<div class="muted small">${d.email || ''}</div></td><td>${d.city || ''}</td>
+      <thead><tr><th>Name</th><th>SP code</th><th>Username</th><th>Phone</th><th>Orphans</th><th class="num">Entries</th><th class="num">Verified total</th><th>Login</th><th></th></tr></thead>
+      <tbody id="d-body">${donors.map((d) => html`<tr class="clickable" data-id="${d.id}" data-text="${[d.name, d.phone, d.email, d.username, d.sponsor_code, d.orphan_nos, d.city].join(' ').toLowerCase()}">
+        <td>${d.name}${d.active ? '' : html` <span class="badge badge-muted">inactive</span>`}<div class="muted small">${d.city || ''}</div></td>
+        <td class="mono small">${(d.sponsor_code || '').split(';').join(', ')}</td>
+        <td class="mono small">${d.username || ''}</td>
+        <td class="small nowrap">${d.phone || ''}<div class="muted">${d.email || ''}</div></td>
         <td class="mono small">${(d.orphan_nos || '').split(';').join(', ')}</td><td class="num">${d.entries}</td><td class="num">${money(d.verified_total)}</td>
-        <td>${fmtDate(d.last_payment)}</td><td>${d.can_login ? html`<span class="badge badge-ok">yes</span>` : html`<span class="badge badge-muted">no password</span>`}</td></tr>`)}</tbody>
+        <td>${!d.can_login ? html`<span class="badge badge-muted">no login</span>` : d.password_is_default ? html`<span class="badge badge-partial" title="Password issued by the foundation">issued</span>` : html`<span class="badge badge-ok">own password</span>`}</td>
+        <td data-noopen><button class="btn btn-sm" data-ledger="${d.id}">Ledger</button></td></tr>`)}</tbody>
     </table>${donors.length ? '' : html`<div class="empty">No donors yet</div>`}</div>`);
   $('#d-q').oninput = (e) => {
     const q = e.target.value.toLowerCase();
@@ -559,38 +642,206 @@ PAGES.donors = async (view) => {
   };
   $('#add').onclick = () => donorForm();
   $('#exp').onclick = () => download('/api/admin/export/donors.csv');
-  $$('#d-body tr').forEach((tr) => { tr.onclick = () => donorForm(donors.find((d) => d.id === Number(tr.dataset.id))); });
+  $('#exp-logins').onclick = () => download('/api/admin/export/logins.csv');
+  $('#make-logins')?.addEventListener('click', async () => {
+    if (!(await confirmDialog(`Create logins for ${noLogin} donors? Username = mobile number (or first name), password = bua-<orphan code>.`, { okLabel: 'Create logins' }))) return;
+    const r = await api.post('/api/admin/donors/logins', {});
+    toast(`${r.count} logins created. Use "Login list" to share them.`);
+    route();
+  });
+  $$('#d-body tr').forEach((tr) => {
+    tr.onclick = (e) => {
+      if (e.target.closest('[data-ledger]')) { donorLedger(Number(tr.dataset.id)); return; }
+      if (e.target.closest('[data-noopen]')) return;
+      donorForm(donors.find((d) => d.id === Number(tr.dataset.id)));
+    };
+  });
 };
 
 function donorForm(d = {}) {
   const m = modal(d.id ? `Donor · ${d.name}` : 'Add donor', html`
     <form class="form-grid" id="donor-form">
       <label>Name<input name="name" required value="${d.name || ''}"></label>
-      <label>Phone<input name="phone" value="${d.phone || ''}"></label>
+      <label>Mobile number<input name="phone" inputmode="tel" value="${d.phone || ''}" placeholder="03xx xxxxxxx"></label>
       <label>Email<input name="email" type="email" value="${d.email || ''}"></label>
       <label>City<input name="city" value="${d.city || ''}"></label>
       <label>Sponsor code <span class="hint">e.g. SP11</span><input name="sponsor_code" value="${d.sponsor_code || ''}"></label>
-      <label class="full">Sponsored orphan numbers <span class="hint">separate with ;</span><input name="orphan_nos" value="${(d.orphan_nos || '').split(';').join('; ')}"></label>
+      <label>Sponsored orphan numbers <span class="hint">separate with ;</span><input name="orphan_nos" value="${(d.orphan_nos || '').split(';').join('; ')}"></label>
       ${d.id ? html`<label class="check full"><input type="checkbox" name="active" ${d.active ? 'checked' : ''}>Active (can sign in)</label>`
-        : html`<label class="full">Password <span class="hint">(optional; the donor signs in with phone/email + this password)</span><input name="password" type="text" minlength="6"></label>`}
+        : html`<p class="full muted small">A login is created automatically: username = mobile number (or first name outside Pakistan), password = bua-&lt;orphan code&gt;.</p>`}
       <div class="form-error full" role="alert"></div>
       <div class="full actions" style="justify-content:space-between">
-        ${d.id ? html`<span style="display:flex;gap:8px"><button type="button" class="btn btn-sm" id="reset">Set password</button><a class="btn btn-sm" href="#entries?status=&q=${encodeURIComponent(d.phone || d.email || d.name)}">View entries</a></span>` : html`<span></span>`}
+        ${d.id ? html`<span style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn btn-sm" id="del" style="color:var(--danger)">Delete donor</button><button type="button" class="btn btn-sm" id="ledger">Ledger</button><a class="btn btn-sm" href="#entries?status=&q=${encodeURIComponent(d.phone || d.email || d.name)}">Entries</a></span>` : html`<span></span>`}
         <span><button type="button" class="btn" data-close>Cancel</button> <button class="btn btn-primary" type="submit">Save</button></span></div>
-    </form>`);
-  onSubmit($('form', m.el), async (e) => {
+    </form>
+    ${d.id ? html`<div class="card" style="margin-top:16px">
+      <div class="card-head"><h3>Login</h3>${!d.can_login ? html`<span class="badge badge-muted">no login yet</span>` : d.password_is_default ? html`<span class="badge badge-partial">issued password</span>` : html`<span class="badge badge-ok">donor set own password</span>`}</div>
+      <dl class="kv"><dt>Username</dt><dd class="mono">${d.username || '—'}</dd>
+        ${d.issued_password ? html`<dt>Password</dt><dd class="mono">${d.issued_password}</dd>` : ''}</dl>
+      <form class="form-grid" id="login-form" style="margin-top:12px">
+        <label>New username <span class="hint">blank = mobile number / first name</span><input name="username" autocomplete="off" placeholder="${d.username || ''}"></label>
+        <label>New password <span class="hint">blank = bua-&lt;orphan code&gt;</span><input name="password" autocomplete="off"></label>
+        <div class="form-error full" role="alert"></div>
+        <div class="full actions" style="justify-content:flex-start;margin-top:0"><button class="btn" type="submit">Reset username &amp; password</button></div>
+      </form></div>` : ''}`);
+  onSubmit($('#donor-form', m.el), async (e) => {
     const body = formData(e.target);
     let res;
     if (d.id) res = await api.put(`/api/admin/donors/${d.id}`, { ...body, active: e.target.active.checked });
     else res = await api.post('/api/admin/donors', body);
     m.close();
-    toast(res.missing_orphans?.length ? `Saved. Unknown orphan numbers: ${res.missing_orphans.join(', ')}` : 'Donor saved', res.missing_orphans?.length ? 'error' : 'ok');
+    if (res.login) showLogin(body.name, res.login);
+    else toast(res.missing_orphans?.length ? `Saved. Unknown orphan numbers: ${res.missing_orphans.join(', ')}` : 'Donor saved', res.missing_orphans?.length ? 'error' : 'ok');
     route();
   });
-  $('#reset', m.el)?.addEventListener('click', async () => {
-    const pw = await promptDialog('Set donor password', 'New password (min 6 characters). Share it with the donor.');
-    if (!pw) return;
-    try { await api.post(`/api/admin/donors/${d.id}/password`, { password: pw }); toast('Password set'); } catch (err) { toast(err.message, 'error'); }
+  if (d.id) {
+    onSubmit($('#login-form', m.el), async (e) => {
+      const { login } = await api.post(`/api/admin/donors/${d.id}/login`, formData(e.target));
+      m.close();
+      showLogin(d.name, login);
+      route();
+    });
+    $('#ledger', m.el).onclick = () => { m.close(); donorLedger(d.id); };
+    $('#del', m.el).onclick = () => deleteRecord(`/api/admin/donors/${d.id}`, `donor ${d.name}`, m);
+  }
+}
+
+function showLogin(name, login) {
+  const text = `Assalam-o-Alaikum ${name}! Your Bait ul Aqba donor login:\nUsername: ${login.username}\nPassword: ${login.password}\nPlease change your password after signing in.`;
+  const m = modal('Login details', html`
+    <p>Share these with <strong>${name}</strong>:</p>
+    <dl class="kv"><dt>Username</dt><dd class="mono">${login.username}</dd><dt>Password</dt><dd class="mono">${login.password}</dd></dl>
+    <textarea id="login-msg" rows="4" readonly style="margin-top:12px">${text}</textarea>
+    <div class="actions"><button class="btn" data-close>Close</button><button class="btn btn-primary" id="copy-login">Copy message</button></div>`);
+  $('#copy-login', m.el).onclick = async () => {
+    try { await navigator.clipboard.writeText(text); toast('Copied'); } catch { const t = $('#login-msg', m.el); t.focus(); t.select(); }
+  };
+}
+
+// ---- Transfer batches -----------------------------------------------------------
+
+const batchBadge = (s, label) => html`<span class="badge ${s === 'transferred' ? 'badge-ok' : s === 'ready' ? 'badge-partial' : 'badge-muted'}">${label}</span>`;
+
+PAGES.batches = async (view) => {
+  const { batches, statuses } = await api.get('/api/admin/batches');
+  const sum = (st) => batches.filter((b) => b.status === st).reduce((a, b) => a + b.total, 0);
+  view.innerHTML = String(html`
+    <div class="page-head">
+      <div class="grow"><h1>Transfer batches</h1><p class="muted">Group paid orphans into a batch, then track the money until it reaches their area.</p></div>
+      <button class="btn btn-primary" id="new-batch">＋ New batch from paid orphans</button>
+    </div>
+    <div class="grid grid-3">
+      <div class="card stat"><div class="label">${statuses.collecting}</div><div class="value">${money(sum('collecting'))}</div></div>
+      <div class="card stat warn"><div class="label">${statuses.ready}</div><div class="value">${money(sum('ready'))}</div></div>
+      <div class="card stat accent"><div class="label">${statuses.transferred}</div><div class="value">${money(sum('transferred'))}</div></div>
+    </div>
+    <div class="card"><div class="table-wrap"><table>
+      <thead><tr><th>Batch</th><th>Month</th><th>Area</th><th class="num">Orphans</th><th class="num">Amount</th><th>Status</th><th>Transferred</th></tr></thead>
+      <tbody id="b-body">${batches.map((b) => html`<tr class="clickable" data-id="${b.id}">
+        <td>${b.name}</td><td>${fmtMonth(b.month)}</td><td>${b.area || ''}</td><td class="num">${b.orphans}</td><td class="num">${money(b.total)}</td>
+        <td>${batchBadge(b.status, b.status_label)}</td>
+        <td class="small">${b.transfer_date ? html`${fmtDate(b.transfer_date)}${b.transfer_amount != null ? ` · ${money(b.transfer_amount)}` : ''}<div class="muted mono">${b.transfer_ref || ''}</div>` : ''}</td></tr>`)}</tbody>
+    </table>${batches.length ? '' : html`<div class="empty">No batches yet. Create one from the orphans who are paid for a month.</div>`}</div></div>`);
+  $('#new-batch').onclick = () => newBatch(statuses);
+  $$('#b-body tr').forEach((tr) => { tr.onclick = () => openBatch(Number(tr.dataset.id)); });
+};
+
+async function newBatch(statuses, month = cfg.month) {
+  const m = modal('New transfer batch', html`
+    <form class="form-grid" id="nb-form">
+      <label>Sponsorship month<input type="month" name="month" value="${month}" required></label>
+      <label>Only orphans in area <span class="hint">optional, matches the orphan's city</span><input name="filter_area"></label>
+      <label class="check full"><input type="checkbox" name="pending">Also include orphans whose payment is still waiting for review</label>
+      <div class="full" id="nb-list"><div class="empty">Loading…</div></div>
+      <label>Batch name <span class="hint">optional</span><input name="name" placeholder="e.g. ${fmtMonth(month)} · Khan Younis"></label>
+      <label>Area the money goes to<input name="area"></label>
+      <label>Status<select name="status">${Object.entries(statuses).map(([k, v]) => html`<option value="${k}" ${k === 'ready' ? 'selected' : ''}>${v}</option>`)}</select></label>
+      <label>Notes<input name="notes"></label>
+      <div class="form-error full" role="alert"></div>
+      <div class="full actions"><button type="button" class="btn" data-close>Cancel</button><button class="btn btn-primary" type="submit">Create batch</button></div>
+    </form>`, { wide: true });
+  const form = $('#nb-form', m.el);
+  const load = async () => {
+    const q = new URLSearchParams({ month: form.month.value, pending: form.pending.checked ? '1' : '0', area: form.filter_area.value.trim() });
+    const { orphans } = await api.get(`/api/admin/batches/eligible?${q}`);
+    const box = $('#nb-list', m.el);
+    box.innerHTML = String(orphans.length ? html`
+      <p class="small"><strong id="nb-count">${orphans.length}</strong> of ${orphans.length} paid orphans selected · <strong id="nb-total">${money(orphans.reduce((s, o) => s + o.amount, 0))}</strong></p>
+      <div class="table-wrap" style="max-height:340px;overflow:auto"><table>
+        <thead><tr><th><input type="checkbox" id="nb-all" checked aria-label="Select all"></th><th>Orphan</th><th>City / area</th><th>Sponsor(s)</th><th class="num">Paid</th></tr></thead>
+        <tbody>${orphans.map((o) => html`<tr><td><input type="checkbox" class="nb-sel" value="${o.id}" data-amount="${o.amount}" checked aria-label="${o.orphan_no}"></td>
+          <td><span class="mono">${o.orphan_no}</span> ${o.name}</td><td>${o.city || ''}</td><td class="small">${o.sponsors}</td><td class="num">${money(o.amount)}</td></tr>`)}</tbody></table></div>`
+      : html`<div class="empty">No paid orphans for ${fmtMonth(form.month.value)} that aren't already in a batch.</div>`);
+    const update = () => {
+      const sel = $$('.nb-sel:checked', box);
+      $('#nb-count', box).textContent = sel.length;
+      $('#nb-total', box).textContent = money(sel.reduce((s, c) => s + Number(c.dataset.amount), 0));
+    };
+    $('#nb-all', box)?.addEventListener('change', (e) => { $$('.nb-sel', box).forEach((c) => { c.checked = e.target.checked; }); update(); });
+    box.addEventListener('change', (e) => { if (e.target.classList.contains('nb-sel')) update(); });
+  };
+  ['month', 'pending'].forEach((n) => form[n].addEventListener('change', load));
+  form.filter_area.addEventListener('change', load);
+  await load();
+  onSubmit(form, async () => {
+    const ids = $$('.nb-sel:checked', form).map((c) => Number(c.value));
+    const b = formData(form);
+    const { batch } = await api.post('/api/admin/batches', {
+      month: b.month, name: b.name, area: b.area || b.filter_area, status: b.status, notes: b.notes, orphan_ids: ids, include_pending: form.pending.checked,
+    });
+    m.close();
+    toast(`${batch.name} created: ${batch.items.length} orphans, ${money(batch.total)}`);
+    route();
+  });
+}
+
+async function openBatch(id) {
+  const { batch: b, statuses } = await api.get(`/api/admin/batches/${id}`);
+  const locked = b.status === 'transferred';
+  const m = modal(b.name, html`
+    <p>${batchBadge(b.status, b.status_label)} <span class="muted">${b.month_label}${b.area ? ` · ${b.area}` : ''} · ${b.items.length} orphans · <strong>${money(b.total)}</strong></span></p>
+    ${b.changed ? html`<div class="alert alert-warn">${b.changed} orphan${b.changed === 1 ? "'s" : "s'"} paid amount changed since they were added (for example an entry was rejected). Check the "Paid now" column.</div>` : ''}
+    <form class="form-grid" id="b-form">
+      <label>Status<select name="status">${Object.entries(statuses).map(([k, v]) => html`<option value="${k}" ${k === b.status ? 'selected' : ''}>${v}</option>`)}</select></label>
+      <label>Area<input name="area" value="${b.area || ''}"></label>
+      <label>Transfer date<input type="date" name="transfer_date" value="${b.transfer_date || ''}"></label>
+      <label>Amount transferred (${cfg.currency})<input name="transfer_amount" inputmode="decimal" value="${b.transfer_amount ?? ''}" placeholder="${b.total}"></label>
+      <label>Transfer reference<input name="transfer_ref" value="${b.transfer_ref || ''}"></label>
+      <label>Batch name<input name="name" value="${b.name}"></label>
+      <label class="full">Notes<input name="notes" value="${b.notes || ''}"></label>
+      <div class="form-error full" role="alert"></div>
+      <div class="full actions" style="justify-content:space-between;margin-top:0">
+        <span style="display:flex;gap:8px"><button type="button" class="btn btn-sm" id="b-del" style="color:var(--danger)">Delete batch</button><button type="button" class="btn btn-sm" id="b-exp">⬇ Export</button></span>
+        <button class="btn btn-primary" type="submit">Save</button></div>
+    </form>
+    <div class="table-wrap" style="margin-top:14px"><table>
+      <thead><tr>${locked ? '' : html`<th></th>`}<th>Orphan</th><th>City / area</th><th>Sponsor(s)</th><th class="num">In batch</th><th class="num">Paid now</th></tr></thead>
+      <tbody>${b.items.map((i) => html`<tr>${locked ? '' : html`<td><input type="checkbox" class="b-sel" value="${i.orphan_id}" aria-label="${i.orphan_no}"></td>`}
+        <td><span class="mono">${i.orphan_no}</span> ${i.name}</td><td>${i.city || ''}</td><td class="small">${i.sponsors}</td><td class="num">${money(i.amount)}</td>
+        <td class="num">${money(i.verified_now)}${i.pending_now ? html`<div class="muted small">+ ${money(i.pending_now)} pending</div>` : ''}</td></tr>`)}</tbody></table></div>
+    ${locked ? html`<p class="muted small">This batch is marked as transferred, so its orphans can't be changed. Change the status to edit it.</p>`
+      : html`<div class="actions" style="justify-content:flex-start"><button class="btn btn-sm" id="b-remove">Remove selected orphans</button><button class="btn btn-sm" id="b-add">＋ Add paid orphans</button></div>`}`, { wide: true });
+  onSubmit($('#b-form', m.el), async (e) => {
+    await api.put(`/api/admin/batches/${id}`, formData(e.target));
+    m.close(); toast('Batch saved'); route();
+  });
+  $('#b-exp', m.el).onclick = () => download(`/api/admin/batches/${id}/export`);
+  $('#b-del', m.el).onclick = async () => {
+    if (!(await confirmDialog(`Delete ${b.name}? The orphans become available for a new batch. Donations are not affected.`, { danger: true, okLabel: 'Delete batch' }))) return;
+    await api.del(`/api/admin/batches/${id}`); m.close(); toast('Batch deleted'); route();
+  };
+  $('#b-remove', m.el)?.addEventListener('click', async () => {
+    const ids = $$('.b-sel:checked', m.el).map((c) => Number(c.value));
+    if (!ids.length) { toast('Select orphans to remove', 'error'); return; }
+    await api.post(`/api/admin/batches/${id}/remove`, { orphan_ids: ids });
+    m.close(); openBatch(id); route();
+  });
+  $('#b-add', m.el)?.addEventListener('click', async () => {
+    const { orphans } = await api.get(`/api/admin/batches/eligible?month=${b.month}`);
+    if (!orphans.length) { toast(`No other paid orphans for ${b.month_label}`, 'error'); return; }
+    if (!(await confirmDialog(`Add all ${orphans.length} other paid orphans for ${b.month_label} (${money(orphans.reduce((s, o) => s + o.amount, 0))}) to this batch?`, { okLabel: 'Add' }))) return;
+    await api.post(`/api/admin/batches/${id}/add`, { orphan_ids: orphans.map((o) => o.id) });
+    m.close(); openBatch(id); route();
   });
 }
 
@@ -645,7 +896,7 @@ PAGES.data = async (view) => {
       <div class="alert ${r.errors.length ? 'alert-warn' : 'alert-ok'}" style="margin-top:14px">
         <strong>${r.dry_run ? 'Check result (nothing saved yet)' : 'Import finished'}:</strong>
         ${r.total} rows · ${r.created} ${r.dry_run ? 'will be created' : 'created'} · ${r.updated} ${r.dry_run ? 'will be updated' : 'updated'} · ${r.skipped} skipped · ${r.errors.length} errors
-        ${r.kind === 'orphans' && (r.sponsors_linked || r.donors_created) ? html`<br>Sponsors: ${r.sponsors_linked} orphans ${r.dry_run ? 'will be' : ''} linked to a donor · ${r.donors_created} new donor accounts · ${r.no_sponsor} orphans without a sponsor` : ''}
+        ${r.kind === 'orphans' && (r.sponsors_linked || r.donors_created) ? html`<br>Sponsors: ${r.sponsors_linked} orphans ${r.dry_run ? 'will be' : ''} linked to a donor · ${r.donors_created} new donor accounts${r.logins_created ? ` (logins: mobile number + bua-orphan code)` : ''} · ${r.no_sponsor} orphans without a sponsor` : ''}
       </div>
       ${r.errors.length ? html`<div class="table-wrap"><table><thead><tr><th>Row</th><th>Problem</th></tr></thead><tbody>${r.errors.map((e) => html`<tr><td>${e.row}</td><td>${e.message}</td></tr>`)}</tbody></table></div>` : ''}
       ${r.skipped_rows?.length ? html`<details style="margin-top:10px"><summary class="small">Skipped rows (${r.skipped_rows.length})</summary><div class="table-wrap"><table><thead><tr><th>Row</th><th>Why</th></tr></thead><tbody>${r.skipped_rows.map((x) => html`<tr><td>${x.row}</td><td>${x.reason}</td></tr>`)}</tbody></table></div></details>` : ''}`);

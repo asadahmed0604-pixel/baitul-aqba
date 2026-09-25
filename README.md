@@ -47,6 +47,34 @@ If a donor's browser can't load it, the donor can still type the details. The en
 "automatic reading unavailable" so management checks the image by hand. Management can also press
 **Re-read receipt** on any entry.
 
+## Donor logins
+
+- **Username:** the donor's mobile number in local form (`03xxxxxxxxx`). Donors whose number is outside Pakistan (or who have no number) get their first name (`rizwana`, then `rizwana2` if taken).
+- **Password issued by the foundation:** `bua-` + the donor's orphan code, e.g. `bua-or001` (their lowest code if they sponsor several).
+- Logins are created automatically when sponsors are imported or a donor is added. **Donors → Create missing logins** covers older records, and **Donors → Login list** exports every donor still on an issued password (name, mobile, username, password) to share by WhatsApp.
+- Management can reset any donor's username and password from the donor's page (blank fields go back to the rules above).
+- Donors see a reminder to choose their own password until they change it.
+
+Issued passwords follow a pattern, so anyone who knows a donor's mobile number and orphan code can sign in as them until they change it.
+
+## Notifications
+
+When management verifies or rejects an entry, the donor gets a notification. The bell in the donor portal shows unread notifications. A rejection also appears as a red banner on the donor dashboard, with the reason and a "Submit a new receipt" button.
+
+## Transfer batches
+
+**Transfer batches** groups paid orphans for a month so the money can be sent to their area:
+1. **New batch from paid orphans:** choose the month (optionally an area, which matches the orphan's city). Verified orphans that aren't in a batch yet are listed; tick them and create the batch.
+2. Each batch has a status: **Donations pending** → **Donations received · transfer to area pending** → **Money transferred to area**, plus transfer date, amount and reference.
+3. An orphan-month can only be in one batch. Amounts are fixed when orphans are added; the batch warns if a donation changes afterwards (for example it is rejected).
+
+The dashboard shows paid money not yet batched, money waiting to be transferred, and money transferred.
+
+## Ledgers and deleting
+
+- **Ledger** (Orphans or Donors list, or inside a record): every month paid, the donor or orphan, review status, running verified total, receipt, and transfer batch. Export it to Excel/CSV.
+- **Delete** an orphan or donor from their record. If they have donation entries you are asked to confirm again, and those entries are deleted too. Orphans that share an entry with other orphans must be removed from that entry first.
+
 ## Reports (Management)
 
 - **Weekly report:** receipts for a month grouped by the **date on the receipt**: week 1 = 1st–7th, 2 = 8th–14th, 3 = 15th–21st, 4 = 22nd–28th, 5 = 29th–end.

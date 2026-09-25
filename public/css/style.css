@@ -292,3 +292,6 @@ pre.ocr { white-space: pre-wrap; background: var(--surface-2); border: 1px solid
   .kv dd { margin-bottom: 8px; }
   .page-head .btn { width: 100%; }
 }
+.flag-list li.note-ok { background: var(--ok-50); color: var(--ok); }
+.flag-list li.note-bad { background: var(--danger-50); color: var(--danger); }
+#bell .badge { margin-left: 2px; }

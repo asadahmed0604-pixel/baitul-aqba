@@ -124,7 +124,8 @@ export function promptDialog(title, label, { required = true, okLabel = 'Save' }
     { onClose: () => resolve(null) });
     const f = $('form', m.el);
     f.v.focus();
-    f.onsubmit = (e) => { e.preventDefault(); const v = f.v.value.trim(); m.close(); resolve(v); };
+    // Resolve before closing: closing runs onClose, which would otherwise resolve null first and drop the text.
+    f.onsubmit = (e) => { e.preventDefault(); const v = f.v.value.trim(); resolve(v); m.close(); };
   });
 }
 
@@ -169,8 +170,9 @@ export function renderAuth(root, { role, title, subtitle, allowRegister, onSigne
           <h2>${title}</h2>
           <p class="muted">${subtitle}</p>
           <form class="stack" id="login-form">
-            <label>${role === 'admin' ? 'Email' : 'Phone number or email'}<input name="login" required autocomplete="username"></label>
+            <label>${role === 'admin' ? 'Email' : 'Mobile number (03…) or username'}<input name="login" required autocomplete="username" ${role === 'admin' ? '' : 'placeholder="03xx xxxxxxx"'}></label>
             <label>Password<input name="password" type="password" required autocomplete="current-password"></label>
+            ${role === 'admin' ? '' : html`<p class="hint">First time? Your password is <strong>bua-</strong> followed by your orphan code, e.g. <span class="mono">bua-or001</span>. Donors outside Pakistan use their first name as username.</p>`}
             <div class="form-error" role="alert"></div>
             <button class="btn btn-primary btn-block" type="submit">Sign in</button>
           </form>
@@ -218,7 +220,7 @@ export async function signOut() {
   location.reload();
 }
 
-export function changePasswordDialog() {
+export function changePasswordDialog(onChanged) {
   const m = modal('Change password', html`
     <form class="stack">
       <label>Current password<input type="password" name="current" required autocomplete="current-password"></label>
@@ -230,5 +232,6 @@ export function changePasswordDialog() {
     await api.post('/api/auth/password', formData(e.target));
     m.close();
     toast('Password updated');
+    onChanged?.();
   });
 }

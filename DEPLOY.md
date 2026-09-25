@@ -32,11 +32,13 @@ Web service taqreeban $7 mahana aur 5 GB disk taqreeban $1–2 mahana hai. Sahi 
    - Excel file seedha chalti hai, CSV banane ki zaroorat nahi. Columns: `Code, Orphan's Name, Name, Child Phone, SP Code, Sponsor Name, Sponsor Phone, Sponsor Area`.
    - Har sponsor khud donor ban kar apne orphans se link ho jata hai. Aik phone number = aik donor account.
    - Dobara import karna mehfooz hai: kuch double nahi hota, aur haath se dale gaye monthly amounts nahi mit-te.
-   - Imported sponsors ka password nahi hota. Jab sponsor donor link par **"Create an account"** mein wahi phone number dalta hai jo sheet mein hai, to usay apna purana account (orphans ke saath) mil jata hai.
-     Yeh sirf pehli dafa hota hai, aur Activity log mein `donor.claim` likha jata hai.
+   - Har sponsor ka login khud ban jata hai: **username = mobile number (03…)**, ya Pakistan se bahar ke number par **pehla naam** (jaise `rizwana`). **Password = bua- + orphan code**, jaise `bua-or001`.
+   - **Donors → Login list** se sab ke login ki list (Excel) nikal kar WhatsApp par bhej dein. Kisi ka login badalna ho to donor khol kar **Reset username & password** dabayein.
+   - Donor pehli dafa login kare to usay apna password badalne ko kaha jata hai.
 9. **Donors ko link bhejein** (WhatsApp par):
    > Assalam-o-Alaikum! Apni monthly donation ki receipt yahan jama karein: https://…/donor
-   > Pehli dafa "Create an account" karein. Phone ke browser menu se "Add to Home screen" karne se app ban jayegi.
+   > Username: aap ka mobile number (03…), password: bua- aur aap ke orphan ka code (jaise bua-or001). Login ke baad apna password badal lein.
+   > Phone ke browser menu se "Add to Home screen" karne se app ban jayegi.
 
 ### Apna domain (optional)
 `donate.baitulaqba.org` jaisa address chahiye to Render mein **Settings → Custom Domains** mein domain dalein, aur jo DNS record Render bataye woh apne domain provider par laga dein. HTTPS khud lag jata hai.
