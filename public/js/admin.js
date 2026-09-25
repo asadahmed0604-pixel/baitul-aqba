@@ -574,16 +574,24 @@ async function deleteRecord(url, label, parentModal) {
 function ledgerTable(l, { showOrphan, showDonor }) {
   if (!l.rows.length) return html`<div class="empty">No donations recorded yet</div>`;
   return html`<div class="table-wrap"><table>
-    <thead><tr><th>Month</th>${showOrphan ? html`<th>Orphan</th>` : ''}${showDonor ? html`<th>Donor</th>` : ''}<th class="num">Amount</th><th>Status</th><th class="num">Verified total</th><th>Receipt</th><th>Transfer</th></tr></thead>
+    <thead><tr><th>Month</th>${showOrphan ? html`<th>Orphan</th>` : ''}${showDonor ? html`<th>Donor</th>` : ''}<th class="num">Billed</th><th class="num">Paid</th><th>Status</th><th class="num">Verified total</th><th>Payment</th><th>Paid to (beneficiary)</th><th>Transfer</th><th>Receipt</th></tr></thead>
     <tbody>${l.rows.map((r) => html`<tr>
       <td class="nowrap">${fmtMonth(r.month)}</td>
       ${showOrphan ? html`<td><span class="mono">${r.orphan_no}</span> ${r.orphan_name}</td>` : ''}
       ${showDonor ? html`<td>${r.donor_name}${r.sponsor_code ? html` <span class="muted small">${r.sponsor_code}</span>` : ''}</td>` : ''}
+      <td class="num">${r.amount_billed ? money(r.amount_billed) : html`<span class="muted">—</span>`}</td>
       <td class="num">${money(r.amount)}</td><td>${statusBadge(r.status)}</td><td class="num">${money(r.verified_balance)}</td>
-      <td class="small">#${r.entry_id} · ${fmtDate(r.payment_date)}<div class="muted mono">${r.transaction_ref || ''}</div></td>
+      <td class="small nowrap">${fmtDate(r.payment_date)} · #${r.entry_id}<div class="muted">${money(r.receipt_amount)} total${r.bank_name ? ` · ${r.bank_name}` : ''}</div><div class="muted mono">${r.transaction_ref || ''}</div></td>
+      <td class="small">${r.beneficiary_name || ''}<div class="muted mono">${r.beneficiary_account || ''}</div><div class="muted">${r.beneficiary_bank || ''}</div></td>
       <td class="small">${r.batch_name ? html`${r.batch_name}<div class="muted">${r.batch_status_label}${r.transfer_date ? ` · ${fmtDate(r.transfer_date)}` : ''}</div>` : html`<span class="muted">not in a batch</span>`}</td>
+      <td>${r.image_path ? html`<a href="/api/payments/${r.entry_id}/image" target="_blank" rel="noopener"><img class="thumb" src="/api/payments/${r.entry_id}/image" alt="Receipt #${r.entry_id}" loading="lazy"></a>` : html`<span class="muted small">no picture</span>`}</td>
     </tr>`)}</tbody></table></div>`;
 }
+
+const ledgerExports = (base) => html`<div class="actions"><button class="btn" data-close>Close</button>
+  <button class="btn" data-dl="${base}.csv">⬇ CSV (with receipt links)</button>
+  <button class="btn btn-primary" data-dl="${base}.xlsx">⬇ Excel with receipt pictures</button></div>`;
+const bindDownloads = (el) => $$('[data-dl]', el).forEach((b) => { b.onclick = () => download(b.dataset.dl); });
 
 const ledgerTotals = (t) => html`<div class="grid grid-4" style="margin-bottom:14px">
   <div class="stat" style="padding:0"><div class="label">Verified</div><div class="value">${money(t.verified)}</div><div class="sub">${t.months_verified} orphan-months</div></div>
@@ -597,8 +605,9 @@ async function orphanLedger(id) {
     <p class="muted">Sponsor(s): ${l.sponsors.length ? l.sponsors.map((s) => `${s.name}${s.sponsor_code ? ` (${s.sponsor_code})` : ''}`).join(', ') : 'none'}${l.orphan.monthly_amount ? ` · monthly ${money(l.orphan.monthly_amount)}` : ''}</p>
     ${ledgerTotals(l.totals)}
     ${ledgerTable(l, { showDonor: true })}
-    <div class="actions"><button class="btn" data-close>Close</button><button class="btn btn-primary" id="led-exp">⬇ Export ledger (Excel/CSV)</button></div>`, { wide: true });
-  $('#led-exp', m.el).onclick = () => download(`/api/admin/orphans/${id}/ledger.csv`);
+    ${ledgerExports(`/api/admin/orphans/${id}/ledger`)}`, { wide: true });
+  m.el.querySelector('.modal').classList.add('modal-xwide');
+  bindDownloads(m.el);
 }
 
 async function donorLedger(id) {
@@ -607,8 +616,9 @@ async function donorLedger(id) {
     <p class="muted">${[l.donor.sponsor_code, l.donor.phone, l.donor.username ? `username ${l.donor.username}` : ''].filter(Boolean).join(' · ')} · Orphans: ${l.orphans.map((o) => o.orphan_no).join(', ') || 'none'}</p>
     ${ledgerTotals(l.totals)}
     ${ledgerTable(l, { showOrphan: true })}
-    <div class="actions"><button class="btn" data-close>Close</button><button class="btn btn-primary" id="led-exp">⬇ Export ledger (Excel/CSV)</button></div>`, { wide: true });
-  $('#led-exp', m.el).onclick = () => download(`/api/admin/donors/${id}/ledger.csv`);
+    ${ledgerExports(`/api/admin/donors/${id}/ledger`)}`, { wide: true });
+  m.el.querySelector('.modal').classList.add('modal-xwide');
+  bindDownloads(m.el);
 }
 
 // ---- Donors -------------------------------------------------------------------
@@ -856,10 +866,17 @@ PAGES.data = async (view) => {
         <form class="stack" id="exp-form">
           <div class="form-grid"><label>From (receipt date)<input type="date" name="from"></label><label>To<input type="date" name="to"></label></div>
           <label>Status<select name="status"><option value="">All</option><option value="verified">Verified only</option><option value="pending">Pending only</option><option value="rejected">Rejected only</option></select></label>
-          <button class="btn btn-primary" type="submit">⬇ Donation entries (one row per receipt)</button>
+          <p class="small muted">Every export includes who paid, the months paid for, payment date, amount billed and paid, beneficiary details and the receipt. Excel files show the receipt picture in each row; CSV files have a link to it (valid for 180 days).</p>
+          <div class="actions" style="justify-content:flex-start;margin-top:0">
+            <button class="btn btn-primary" type="submit" data-fmt="xlsx">⬇ Donation entries · Excel with pictures</button>
+            <button class="btn" type="submit" data-fmt="csv">⬇ CSV</button></div>
+          <p class="small muted" style="margin:0">One row per receipt.</p>
+          <div class="actions" style="justify-content:flex-start;margin-top:0">
+            <button class="btn btn-primary" type="submit" data-fmt="months.xlsx">⬇ Ledger of all orphans · Excel with pictures</button>
+            <button class="btn" type="submit" data-fmt="months.csv">⬇ CSV</button></div>
+          <p class="small muted" style="margin:0">One row per orphan per month paid.</p>
         </form>
         <div class="stack" style="margin-top:14px">
-          <button class="btn" data-dl="/api/admin/export/months.csv">⬇ Month allocations (one row per orphan per month)</button>
           <button class="btn" data-dl="/api/admin/export/orphans.csv">⬇ Orphans</button>
           <button class="btn" data-dl="/api/admin/export/donors.csv">⬇ Donors</button>
         </div>
@@ -883,7 +900,9 @@ PAGES.data = async (view) => {
   $('#exp-form').onsubmit = (e) => {
     e.preventDefault();
     const p = new URLSearchParams(Object.entries(formData(e.target)).filter(([, v]) => v));
-    download(`/api/admin/export/payments.csv?${p}`);
+    const fmt = e.submitter?.dataset.fmt || 'xlsx';
+    const file = fmt.startsWith('months') ? `months.${fmt.split('.')[1]}` : `payments.${fmt}`;
+    download(`/api/admin/export/${file}?${p}`);
   };
   const form = $('#imp-form');
   const run = async (dry) => {

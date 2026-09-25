@@ -208,7 +208,7 @@ test('management review, weekly report, coverage and beneficiaries', async () =>
   assert.equal(ben.data.groups.length, 2);
 
   const csv = await adminC.get(`/api/admin/reports/weekly.csv?month=${month}`);
-  assert.match(csv.data, /week,entry_id,donor_name/);
+  assert.match(csv.data, /Week,Entry #,Payment date \(receipt\),Donor,Donor mobile/);
 
   const mine = await donor.get('/api/donor/payments');
   assert.equal(mine.data.payments.find((p) => p.id === unknown.id).admin_note, 'Paid to wrong account');
@@ -227,7 +227,18 @@ test('admin edit re-allocates months', async () => {
 test('export and import round trip', async () => {
   const exp = await adminC.get('/api/admin/export/payments.csv');
   assert.equal(exp.status, 200);
-  assert.match(exp.data, /entry_id,donor_name/);
+  assert.match(exp.data, /Entry #,Payment date \(receipt\),Donor,Donor mobile,Donor email,SP code,Orphans,Months paid for/);
+  assert.match(exp.data, /Beneficiary name,Beneficiary account \/ IBAN,Beneficiary bank/);
+  // The receipt link opens the picture without signing in; a tampered link is refused.
+  const link = /(http:\/\/[^,\s]+\/api\/receipt\/\d+\?e=\d+&s=[\w-]+)/.exec(exp.data)[1];
+  const img = await fetch(link);
+  assert.equal(img.status, 200);
+  assert.equal(img.headers.get('content-type'), 'image/png');
+  assert.equal((await fetch(link.replace(/s=\w/, 's=X'))).status, 403);
+  // An export can be imported back: every entry is recognised as already in the system.
+  const back = await adminC.post('/api/admin/import/payments', { csv: exp.data.replace(/^\ufeff/, ''), dry_run: true });
+  assert.equal(back.data.errors.length, 0, JSON.stringify(back.data.errors));
+  assert.equal(back.data.skipped, back.data.total);
 
   const csv = [
     'donor_name,donor_phone,donor_email,orphan_nos,months,amount,payment_date,bank_name,transaction_ref,beneficiary_name,beneficiary_account,status',
@@ -434,7 +445,22 @@ test('batches, ledgers, dashboard and deleting', async () => {
   const donorId = (await adminC.get('/api/admin/donors')).data.donors.find((x) => x.username === '03204000455').id;
   const dl = (await adminC.get(`/api/admin/donors/${donorId}/ledger`)).data;
   assert.equal(dl.totals.verified, 7000);
-  assert.match((await adminC.get(`/api/admin/donors/${donorId}/ledger.csv`)).data, /month,orphan_no,orphan_name/);
+  const lcsv = (await adminC.get(`/api/admin/donors/${donorId}/ledger.csv`)).data;
+  assert.match(lcsv, /Month paid for,Orphan code,Orphan name,Donor,Donor mobile,SP code,Amount billed,Amount paid/);
+  assert.match(lcsv, /OR005,Amira Mahmood,Imran Hamza,03204000455,,,7000,,verified/);
+  assert.match(lcsv, /TX-BATCH-1,.*BAIT UL AQBA FOUNDATION,PK36MEZN0001230104567890,.*Yes,.*Money transferred to area/);
+  // Excel ledger: a real .xlsx with the receipt picture embedded.
+  const xr = await fetch(`${base}/api/admin/orphans/${or5.id}/ledger.xlsx`, { headers: { cookie: adminC.cookie } });
+  assert.equal(xr.status, 200);
+  const xbuf = Buffer.from(await xr.arrayBuffer());
+  assert.equal(xbuf.readUInt32LE(0), 0x04034b50);
+  const names = xbuf.toString('latin1');
+  assert.ok(names.includes('xl/media/image1.png') && names.includes('xl/drawings/drawing1.xml'));
+  const { readGrid } = await import('../src/xlsx.js');
+  const grid = readGrid(xbuf);
+  assert.match(grid[0][0], /^Ledger · OR005 Amira Mahmood/);
+  assert.equal(grid[1][0], 'Month paid for'); // title, then the header row
+  assert.ok(grid.some((row) => row.includes('TX-BATCH-1') && row.includes('View receipt')));
 
   // Deleting: needs confirmation when entries exist, then removes them.
   const del1 = await adminC.req('DELETE', `/api/admin/donors/${donorId}`);

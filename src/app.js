@@ -16,7 +16,9 @@ import { toCsv, parseCsv } from './csv.js';
 import { parseXlsx, isXlsx } from './xlsx.js';
 import { issueLogin, makeUsername, validUsername, localPkMobile } from './logins.js';
 import { registerBatchRoutes, batchSummary } from './batches.js';
-import { orphanLedger, donorLedger, LEDGER_COLUMNS } from './ledgers.js';
+import { orphanLedger, donorLedger, allLines } from './ledgers.js';
+import { receiptLinks, baseUrl, pictureLoader, ledgerColumns, paymentColumns, forCsv } from './exports.js';
+import { buildXlsx } from './xlsx-writer.js';
 import { addMonths, monthLabel, normalizeAccount, daysInMonth } from '../public/shared/receipt-parser.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -107,6 +109,20 @@ function applyAliases(kind, row) {
     pick('sponsor_code', 'sp_code', 'sponsor_id');
     pick('sponsor_area', 'sponsor_city');
   }
+  if (kind === 'payments') {
+    // Column names used by the entries export, so an export can be imported back.
+    pick('donor_name', 'donor');
+    pick('donor_phone', 'donor_mobile');
+    pick('orphan_nos', 'orphans');
+    pick('months', 'months_paid_for');
+    pick('amount', 'amount_paid');
+    pick('payment_date', 'payment_date_receipt');
+    pick('transaction_ref', 'transaction_id');
+    pick('bank_name', 'paid_from_bank');
+    pick('beneficiary_account', 'beneficiary_account_iban');
+    pick('admin_note', 'management_note');
+    pick('submitted_at', 'submitted');
+  }
   if (kind === 'donors') {
     pick('sponsor_code', 'sp_code');
     pick('city', 'area', 'sponsor_area');
@@ -138,7 +154,18 @@ const clientIp = (req) => (process.env.TRUST_PROXY === '1' && String(req.headers
 export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path.join(ROOT, 'uploads'), dbFile, secureCookies = false } = {}) {
   const db = openDb(dbFile || path.join(dataDir, 'baitulaqba.db'));
   fs.mkdirSync(uploadsDir, { recursive: true });
-  const auth = createAuth(db, loadSecret(dataDir), { secureCookies });
+  const secret = loadSecret(dataDir);
+  const auth = createAuth(db, secret, { secureCookies });
+  const links = receiptLinks(secret);
+  const picture = pictureLoader(uploadsDir);
+  const linkFor = (ctx) => (id) => links.url(baseUrl(ctx.req), id);
+  const xlsx = (res, name, opts) => sendFile(res, buildXlsx({ picture, pictureColumn: 'Receipt picture', ...opts }), {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename: name,
+  });
+  // Amount billed for a receipt = monthly sponsorship of every orphan-month it covers.
+  const billedStmt = () => db.prepare('SELECT COALESCE(SUM(o.monthly_amount), 0) AS b FROM payment_months pm JOIN orphans o ON o.id = pm.orphan_id WHERE pm.payment_id = ?');
+  const withBilling = (payments) => { const st = billedStmt(); return payments.map((p) => ({ ...p, amount_billed: st.get(p.id).b })); };
+  const stamp = () => `exported ${clock(settings()).today}`;
   const r = new Router();
   const settings = () => getSettings(db);
 
@@ -336,9 +363,21 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
   });
 
   r.get('/api/donor/export.csv', auth.requireDonor, (ctx) => {
-    const rows = db.prepare(`SELECT p.*, u.name AS donor_name, u.phone AS donor_phone, u.email AS donor_email
+    const rows = db.prepare(`SELECT p.*, u.name AS donor_name, u.phone AS donor_phone, u.email AS donor_email, u.sponsor_code
       FROM payments p JOIN users u ON u.id = p.donor_id WHERE p.donor_id = ? ORDER BY p.payment_date`).all(ctx.user.id).map((p) => decorate(db, p));
-    csv(ctx.res, 'my-donations.csv', PAYMENT_COLUMNS.filter((c) => !['flags', 'admin_note', 'source'].includes(c.label)), rows);
+    const hide = ['Warnings', 'Source', 'Foundation account?'];
+    csv(ctx.res, 'my-donations.csv', forCsv(paymentColumns(settings(), linkFor(ctx)).filter((c) => !hide.includes(c.label))), withBilling(rows));
+  });
+
+  // Receipt picture behind a signed, expiring link (used in exported spreadsheets).
+  r.get('/api/receipt/:id', (ctx) => {
+    const id = Number(ctx.params.id);
+    if (!links.verify(id, ctx.query.get('e'), ctx.query.get('s'))) fail(403, 'This receipt link is invalid or has expired. Export the file again for a fresh link.');
+    const p = db.prepare('SELECT image_path FROM payments WHERE id = ?').get(id);
+    if (!p || !p.image_path) fail(404, 'No receipt image');
+    const file = path.join(uploadsDir, p.image_path);
+    const ext = path.extname(file).slice(1);
+    sendFile(ctx.res, fs.readFileSync(file), { type: ext === 'jpg' ? 'image/jpeg' : `image/${ext}`, filename: path.basename(file), inline: true });
   });
 
   // ---- Management end ----------------------------------------------------
@@ -519,7 +558,14 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
   r.get('/api/admin/orphans/:id/ledger', admin, (ctx) => orphanLedger(db, Number(ctx.params.id)));
   r.get('/api/admin/orphans/:id/ledger.csv', admin, (ctx) => {
     const l = orphanLedger(db, Number(ctx.params.id));
-    csv(ctx.res, `ledger-${l.orphan.orphan_no}.csv`, LEDGER_COLUMNS, l.rows);
+    csv(ctx.res, `ledger-${l.orphan.orphan_no}.csv`, forCsv(ledgerColumns(settings(), linkFor(ctx))), l.rows);
+  });
+  r.get('/api/admin/orphans/:id/ledger.xlsx', admin, (ctx) => {
+    const l = orphanLedger(db, Number(ctx.params.id));
+    xlsx(ctx.res, `ledger-${l.orphan.orphan_no}.xlsx`, {
+      sheetName: l.orphan.orphan_no, columns: ledgerColumns(settings(), linkFor(ctx)), rows: l.rows,
+      title: `Ledger · ${l.orphan.orphan_no} ${l.orphan.name} · sponsor(s): ${l.sponsors.map((x) => x.name).join(', ') || 'none'} · verified ${l.totals.verified} · ${stamp()}`,
+    });
   });
 
   // Donors
@@ -634,7 +680,14 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
   r.get('/api/admin/donors/:id/ledger', admin, (ctx) => donorLedger(db, Number(ctx.params.id)));
   r.get('/api/admin/donors/:id/ledger.csv', admin, (ctx) => {
     const l = donorLedger(db, Number(ctx.params.id));
-    csv(ctx.res, `ledger-${l.donor.name.replace(/[^A-Za-z0-9]+/g, '-')}.csv`, LEDGER_COLUMNS, l.rows);
+    csv(ctx.res, `ledger-${l.donor.name.replace(/[^A-Za-z0-9]+/g, '-')}.csv`, forCsv(ledgerColumns(settings(), linkFor(ctx))), l.rows);
+  });
+  r.get('/api/admin/donors/:id/ledger.xlsx', admin, (ctx) => {
+    const l = donorLedger(db, Number(ctx.params.id));
+    xlsx(ctx.res, `ledger-${l.donor.name.replace(/[^A-Za-z0-9]+/g, '-')}.xlsx`, {
+      sheetName: l.donor.name, columns: ledgerColumns(settings(), linkFor(ctx)), rows: l.rows,
+      title: `Ledger · ${l.donor.name}${l.donor.sponsor_code ? ` (${l.donor.sponsor_code})` : ''} · orphans: ${l.orphans.map((o) => o.orphan_no).join(', ') || 'none'} · verified ${l.totals.verified} · ${stamp()}`,
+    });
   });
 
   registerBatchRoutes({ r, db, admin, csv, today: () => clock(settings()).today });
@@ -691,7 +744,7 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
   r.get('/api/admin/reports/weekly.csv', admin, (ctx) => {
     const rep = weeklyReport(db, settings(), monthParam(ctx.query), statusesParam(ctx.query));
     const rows = rep.weeks.flatMap((w) => w.entries.map((p) => ({ ...p, week: `Week ${w.week} (${w.from} to ${w.to})` })));
-    csv(ctx.res, `weekly-report-${rep.month}.csv`, [{ key: 'week', label: 'week' }, ...PAYMENT_COLUMNS], rows);
+    csv(ctx.res, `weekly-report-${rep.month}.csv`, [{ key: 'week', label: 'Week' }, ...forCsv(paymentColumns(settings(), linkFor(ctx)))], withBilling(rows));
   });
   r.get('/api/admin/reports/coverage', admin, (ctx) => coverageReport(db, monthParam(ctx.query), statusesParam(ctx.query)));
   r.get('/api/admin/reports/coverage.csv', admin, (ctx) => {
@@ -727,21 +780,31 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
   });
 
   // Export
-  r.get('/api/admin/export/payments.csv', admin, (ctx) => {
-    const q = ctx.query;
-    const from = q.get('from') || '0000-01-01', to = q.get('to') || '9999-12-31';
-    const statuses = q.get('status') ? q.get('status').split(',') : ['pending', 'verified', 'rejected'];
-    csv(ctx.res, `donation-entries-${clock(settings()).today}.csv`, PAYMENT_COLUMNS, paymentsInRange(db, from, to, statuses));
+  const exportRange = (q) => ({
+    from: q.get('from') || '0000-01-01', to: q.get('to') || '9999-12-31',
+    statuses: q.get('status') ? q.get('status').split(',') : ['pending', 'verified', 'rejected'],
   });
+  r.get('/api/admin/export/payments.csv', admin, (ctx) => {
+    const { from, to, statuses } = exportRange(ctx.query);
+    csv(ctx.res, `donation-entries-${clock(settings()).today}.csv`, forCsv(paymentColumns(settings(), linkFor(ctx))), withBilling(paymentsInRange(db, from, to, statuses)));
+  });
+  r.get('/api/admin/export/payments.xlsx', admin, (ctx) => {
+    const { from, to, statuses } = exportRange(ctx.query);
+    xlsx(ctx.res, `donation-entries-${clock(settings()).today}.xlsx`, {
+      sheetName: 'Donation entries', columns: paymentColumns(settings(), linkFor(ctx)), rows: withBilling(paymentsInRange(db, from, to, statuses)),
+      title: `Donation entries${ctx.query.get('from') || ctx.query.get('to') ? ` · receipts ${ctx.query.get('from') || '…'} to ${ctx.query.get('to') || '…'}` : ''} · ${stamp()}`,
+    });
+  });
+  // One row per orphan per month paid (the full ledger).
   r.get('/api/admin/export/months.csv', admin, (ctx) => {
-    const rows = db.prepare(`
-      SELECT pm.month, o.orphan_no, o.name AS orphan_name, pm.amount, p.id AS entry_id, p.payment_date, p.status,
-        u.name AS donor_name, u.phone AS donor_phone, p.transaction_ref, p.beneficiary_account
-      FROM payment_months pm JOIN payments p ON p.id = pm.payment_id JOIN orphans o ON o.id = pm.orphan_id JOIN users u ON u.id = p.donor_id
-      ORDER BY pm.month, o.orphan_no`).all();
-    const cols = Object.keys(rows[0] || { month: 1, orphan_no: 1, orphan_name: 1, amount: 1, entry_id: 1, payment_date: 1, status: 1, donor_name: 1, donor_phone: 1, transaction_ref: 1, beneficiary_account: 1 })
-      .map((k) => ({ key: k, label: k }));
-    csv(ctx.res, `month-allocations-${clock(settings()).today}.csv`, cols, rows);
+    const { from, to } = exportRange(ctx.query);
+    csv(ctx.res, `ledger-all-orphans-${clock(settings()).today}.csv`, forCsv(ledgerColumns(settings(), linkFor(ctx))), allLines(db, { from, to }).rows);
+  });
+  r.get('/api/admin/export/months.xlsx', admin, (ctx) => {
+    const { from, to } = exportRange(ctx.query);
+    xlsx(ctx.res, `ledger-all-orphans-${clock(settings()).today}.xlsx`, {
+      sheetName: 'Ledger', columns: ledgerColumns(settings(), linkFor(ctx)), rows: allLines(db, { from, to }).rows, title: `All orphans ledger · ${stamp()}`,
+    });
   });
   r.get('/api/admin/export/orphans.csv', admin, (ctx) => {
     csv(ctx.res, 'orphans.csv', ORPHAN_COLUMNS, db.prepare('SELECT * FROM orphans ORDER BY orphan_no').all());

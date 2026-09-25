@@ -87,7 +87,13 @@ The dashboard shows paid money not yet batched, money waiting to be transferred,
 
 All files are CSV and open directly in Excel or Google Sheets.
 
-- **Export:** donation entries (one row per receipt), month allocations (one row per orphan per month), orphans, donors, and every report. Donors can export their own history.
+- **Export:** donation entries (one row per receipt), the ledger of all orphans (one row per orphan per month paid), orphans, donors, and every report. Donors can export their own history.
+  Entries and ledgers carry who paid (name, mobile, SP code), the months paid for, the payment date on the receipt,
+  amount billed (orphan's monthly sponsorship) vs paid, transaction ID, sender, beneficiary name/account/bank
+  (and whether it is a foundation account), transfer batch, and the receipt:
+  - **Excel (.xlsx):** the receipt picture sits in each row (JPEG/PNG receipts), plus a "View receipt" link.
+  - **CSV:** a receipt link that opens the picture without signing in; links expire after 180 days (export again for fresh links).
+  An entries export can be imported back as-is.
 - **Import:** donation entries, orphans and donors. Download a template from the Import page first.
   Use **Check file** to validate without saving; rows with problems are listed by row number.
   - Entries: separate several orphans or months with `;` (e.g. `2026-09;2026-10`). Rows whose transaction ID already exists are skipped. Donors are matched by phone or email and created if new. The current-month rule does not apply to imported history.

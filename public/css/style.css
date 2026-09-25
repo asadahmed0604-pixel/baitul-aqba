@@ -295,3 +295,5 @@ pre.ocr { white-space: pre-wrap; background: var(--surface-2); border: 1px solid
 .flag-list li.note-ok { background: var(--ok-50); color: var(--ok); }
 .flag-list li.note-bad { background: var(--danger-50); color: var(--danger); }
 #bell .badge { margin-left: 2px; }
+.thumb { width: 54px; height: 72px; object-fit: cover; object-position: top; border: 1px solid var(--border); border-radius: 4px; display: block; background: #fff; }
+.modal-xwide { width: min(1360px, 100%); }

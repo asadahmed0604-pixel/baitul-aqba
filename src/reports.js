@@ -9,7 +9,7 @@ const statusFilter = (statuses) => {
 export function paymentsInRange(db, from, to, statuses) {
   const f = statusFilter(statuses);
   const rows = db.prepare(`
-    SELECT p.*, u.name AS donor_name, u.phone AS donor_phone, u.email AS donor_email
+    SELECT p.*, u.name AS donor_name, u.phone AS donor_phone, u.email AS donor_email, u.sponsor_code
     FROM payments p JOIN users u ON u.id = p.donor_id
     WHERE p.payment_date BETWEEN ? AND ? AND ${f.sql}
     ORDER BY p.payment_date, p.id`).all(from, to, ...f.params);

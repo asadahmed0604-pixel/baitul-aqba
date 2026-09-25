@@ -42,7 +42,25 @@ export function isXlsx(buf) {
   return buf && buf.length > 4 && buf.readUInt32LE(0) === 0x04034b50;
 }
 
+/** Every row of the first sheet as an array of cell strings (no header handling). */
+export function readGrid(buf) {
+  return sheetGrid(buf).map((r) => Array.from(r.cells, (v) => v ?? ''));
+}
+
+/** Rows of the first sheet as objects keyed by the (normalised) header row. */
 export function parseXlsx(buf) {
+  const nonEmpty = sheetGrid(buf).filter((r) => r.cells.some((v) => String(v ?? '').trim() !== ''));
+  if (!nonEmpty.length) return [];
+  const header = Array.from(nonEmpty[0].cells, (h) => normalizeHeader(h ?? ''));
+  return nonEmpty.slice(1).map((r) => {
+    const obj = {};
+    header.forEach((h, i) => { if (h) obj[h] = String(r.cells[i] ?? '').trim(); });
+    Object.defineProperty(obj, '_row', { value: r.rowNo });
+    return obj;
+  });
+}
+
+function sheetGrid(buf) {
   const files = unzip(buf);
   const strings = files['xl/sharedStrings.xml']
     ? [...files['xl/sharedStrings.xml']().matchAll(/<si>([\s\S]*?)<\/si>/g)].map((m) => textOf(m[1]))
@@ -75,13 +93,5 @@ export function parseXlsx(buf) {
     }
     grid.push({ rowNo, cells });
   }
-  const nonEmpty = grid.filter((r) => r.cells.some((v) => String(v ?? '').trim() !== ''));
-  if (!nonEmpty.length) return [];
-  const header = Array.from(nonEmpty[0].cells, (h) => normalizeHeader(h ?? ''));
-  return nonEmpty.slice(1).map((r) => {
-    const obj = {};
-    header.forEach((h, i) => { if (h) obj[h] = String(r.cells[i] ?? '').trim(); });
-    Object.defineProperty(obj, '_row', { value: r.rowNo });
-    return obj;
-  });
+  return grid;
 }

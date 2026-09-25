@@ -5,9 +5,12 @@ import { BATCH_STATUS } from './batches.js';
 
 const LINES = `
   SELECT pm.month, pm.amount, p.id AS entry_id, p.payment_date, p.status, p.transaction_ref, p.bank_name,
-    p.beneficiary_name, p.beneficiary_account, p.admin_note,
+    p.beneficiary_name, p.beneficiary_account, p.beneficiary_bank, p.sender_name, p.sender_account, p.admin_note,
+    p.amount AS receipt_amount, p.image_path, p.image_width, p.image_height, p.submitted_at, p.reviewed_at,
+    (SELECT GROUP_CONCAT(DISTINCT x.month) FROM payment_months x WHERE x.payment_id = p.id) AS receipt_months,
+    (SELECT GROUP_CONCAT(DISTINCT xo.orphan_no) FROM payment_months x JOIN orphans xo ON xo.id = x.orphan_id WHERE x.payment_id = p.id) AS receipt_orphans,
     u.id AS donor_id, u.name AS donor_name, u.phone AS donor_phone, u.sponsor_code,
-    o.id AS orphan_id, o.orphan_no, o.name AS orphan_name,
+    o.id AS orphan_id, o.orphan_no, o.name AS orphan_name, o.monthly_amount AS amount_billed,
     b.id AS batch_id, b.name AS batch_name, b.status AS batch_status, b.transfer_date
   FROM payment_months pm
   JOIN payments p ON p.id = pm.payment_id
@@ -47,6 +50,11 @@ export function donorLedger(db, id) {
   const orphans = db.prepare(`SELECT o.id, o.orphan_no, o.name FROM donor_orphans d JOIN orphans o ON o.id = d.orphan_id WHERE d.donor_id = ? ORDER BY o.orphan_no`).all(id);
   const lines = db.prepare(`${LINES} WHERE p.donor_id = ? ORDER BY p.payment_date, p.id, o.orphan_no, pm.month`).all(id);
   return { donor, orphans, ...finish(lines) };
+}
+
+/** Every orphan-month paid, optionally limited to a receipt-date range (for the full export). */
+export function allLines(db, { from = '0000-01-01', to = '9999-12-31' } = {}) {
+  return finish(db.prepare(`${LINES} WHERE p.payment_date BETWEEN ? AND ? ORDER BY pm.month, o.orphan_no, p.payment_date, p.id`).all(from, to));
 }
 
 export const LEDGER_COLUMNS = [
