@@ -243,7 +243,7 @@ PAGES.entries = async (view, qs) => {
 };
 
 async function openEntry(id, onChange) {
-  const { payment: p } = await api.get(`/api/admin/payments/${id}`);
+  const [{ payment: p }, { donors }] = await Promise.all([api.get(`/api/admin/payments/${id}`), api.get('/api/admin/donors')]);
   const official = cfg.officialAccounts;
   const m = modal(`Entry #${p.id} · ${p.donor_name}`, html`
     <div class="grid grid-2">
@@ -262,6 +262,7 @@ async function openEntry(id, onChange) {
         ${p.flags.length ? html`<ul class="flag-list">${p.flags.map((f) => html`<li>⚠ ${f.message}</li>`)}</ul>` : html`<div class="alert alert-ok">No automatic warnings</div>`}
         ${p.donor_note ? html`<div class="alert alert-info"><strong>Donor note:</strong> ${p.donor_note}</div>` : ''}
         <form id="edit" class="form-grid">
+          <label class="full">Donor <span class="hint">move the entry to another donor</span><select name="donor_id">${donors.map((d) => html`<option value="${d.id}" ${d.id === p.donor_id ? 'selected' : ''}>${d.name}${d.phone ? ` · ${d.phone}` : ''}${d.sponsor_code ? ` · ${d.sponsor_code}` : ''}</option>`)}</select></label>
           <label>Receipt date<input type="date" name="payment_date" value="${p.payment_date}"></label>
           <label>Amount<input name="amount" value="${p.amount}"></label>
           <label>Orphan no(s) <span class="hint">separate with ;</span><input name="orphan_nos" value="${p.orphan_nos.join('; ')}"></label>
@@ -885,11 +886,13 @@ PAGES.data = async (view) => {
         <div class="card-head"><h3>Import</h3></div>
         <form class="stack" id="imp-form">
           <label>What are you importing?<select name="kind">
-            <option value="payments">Donation entries</option><option value="orphans">Orphans (adds new, updates existing by number)</option><option value="donors">Donors</option></select></label>
+            <option value="payments">Donation entries</option><option value="monthsheet">Monthly payments sheet (orphan code + a column per month)</option><option value="orphans">Orphans (adds new, updates existing by number)</option><option value="donors">Donors</option></select></label>
+          <label id="imp-date" hidden>Payment date for these entries <span class="hint">the sheet has no dates; each entry can be edited later</span><input type="date" name="payment_date"></label>
           <label>Excel or CSV file<input type="file" name="file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required></label>
           <p class="small muted">Download a template: <a href="/api/admin/import/template/payments.csv">entries</a> · <a href="/api/admin/import/template/orphans.csv">orphans</a> · <a href="/api/admin/import/template/donors.csv">donors</a>.
             In entries, list several orphans or months separated by <code>;</code> (e.g. <code>2026-09;2026-10</code>). Rows whose transaction ID already exists are skipped. Donors are matched by phone or email and created if new.
-            <br>The foundation's orphan sheet (<code>Code</code>, <code>Orphan's Name</code>, <code>Name</code>, <code>Child Phone</code>, <code>SP Code</code>, <code>Sponsor Name</code>, <code>Sponsor Phone</code>, <code>Sponsor Area</code>) can be imported as it is under <em>Orphans</em>: sponsors become donors and are linked to their orphans.</p>
+            <br>The foundation's orphan sheet (<code>Code</code>, <code>Orphan's Name</code>, <code>Name</code>, <code>Child Phone</code>, <code>SP Code</code>, <code>Sponsor Name</code>, <code>Sponsor Phone</code>, <code>Sponsor Area</code>) can be imported as it is under <em>Orphans</em>: sponsors become donors and are linked to their orphans.
+            <br><em>Monthly payments sheet</em>: columns <code>Orphan Code</code>, <code>Orphan Name</code>, then one column per month (<code>September</code>, <code>Onwards</code>, <code>October</code>…) with the amount paid. Each row becomes entries for the orphan's sponsor; months after <em>Onwards</em> with the same amount become one advance entry. Rows that don't add up are left pending for review. Importing the same sheet again skips rows already imported.</p>
           <div class="form-error" role="alert"></div>
           <div class="actions" style="justify-content:flex-start"><button class="btn" type="submit" data-mode="dry">Check file (no changes)</button><button class="btn btn-primary" type="button" id="imp-go">Import</button></div>
         </form>
@@ -905,16 +908,22 @@ PAGES.data = async (view) => {
     download(`/api/admin/export/${file}?${p}`);
   };
   const form = $('#imp-form');
+  form.kind.onchange = () => { $('#imp-date').hidden = form.kind.value !== 'monthsheet'; };
   const run = async (dry) => {
     const fd = new FormData(form);
     const kind = fd.get('kind');
     fd.delete('kind');
+    if (kind !== 'monthsheet' || !fd.get('payment_date')) fd.delete('payment_date');
     fd.append('dry_run', dry ? '1' : '0');
     const r = await api.post(`/api/admin/import/${kind}`, fd);
     $('#imp-out').innerHTML = String(html`
       <div class="alert ${r.errors.length ? 'alert-warn' : 'alert-ok'}" style="margin-top:14px">
         <strong>${r.dry_run ? 'Check result (nothing saved yet)' : 'Import finished'}:</strong>
         ${r.total} rows · ${r.created} ${r.dry_run ? 'will be created' : 'created'} · ${r.updated} ${r.dry_run ? 'will be updated' : 'updated'} · ${r.skipped} skipped · ${r.errors.length} errors
+        ${r.kind === 'monthsheet' ? html`<br>Sheet: ${r.sheet_rows} orphan rows → ${r.created} entries${r.dry_run ? ' to add' : ''} (${r.verified} verified, ${r.for_review} pending for review) · ${money(r.amount)} · months ${r.months.map(fmtMonth).join(', ')}
+          ${r.orphans_created.length ? html`<br>New orphans ${r.dry_run ? 'to add' : 'added'} (add their English names): ${r.orphans_created.join(', ')}` : ''}
+          ${r.unsponsored.length ? html`<br>No sponsor on record, entered under "Sponsor not recorded": ${r.unsponsored.join(', ')}` : ''}
+          ${r.monthly_amounts_set ? html`<br>Monthly amount filled in for ${r.monthly_amounts_set} orphans` : ''}` : ''}
         ${r.kind === 'orphans' && (r.sponsors_linked || r.donors_created) ? html`<br>Sponsors: ${r.sponsors_linked} orphans ${r.dry_run ? 'will be' : ''} linked to a donor · ${r.donors_created} new donor accounts${r.logins_created ? ` (logins: mobile number + bua-orphan code)` : ''} · ${r.no_sponsor} orphans without a sponsor` : ''}
       </div>
       ${r.errors.length ? html`<div class="table-wrap"><table><thead><tr><th>Row</th><th>Problem</th></tr></thead><tbody>${r.errors.map((e) => html`<tr><td>${e.row}</td><td>${e.message}</td></tr>`)}</tbody></table></div>` : ''}

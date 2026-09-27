@@ -100,6 +100,11 @@ All files are CSV and open directly in Excel or Google Sheets.
   - Orphans: existing orphan numbers are updated and new ones are added; columns missing from the file keep their current values.
     The foundation's orphan sheet (`Code, Orphan's Name, Name, Child Phone, SP Code, Sponsor Name, Sponsor Phone, Sponsor Area`)
     imports as-is: each sponsor becomes a donor (one per phone number, SP codes kept) and is linked to their orphans.
+  - Monthly payments sheet (`Orphan Code`, `Orphan Name`, then a column per month such as `September`, `Onwards`, `October` … with the amount paid):
+    each row becomes entries for the orphan's linked sponsor, dated with the payment date chosen on the Import page (the sheet has no dates or bank details).
+    Months after `Onwards` with the same amount become one advance entry. Rows whose `Onwards` total doesn't match the months, or that repeat an earlier row, are left *pending* with a note; the rest are verified.
+    Orphan codes not in the system are added (Arabic name, add the English name later). Orphans with no sponsor go under a "Sponsor not recorded" donor with no login; move those entries to the real donor from the entry's *Donor* field.
+    Importing the same sheet again skips rows already imported. A sheet uploaded as "Donation entries" is recognised automatically.
   - Imports accept Excel `.xlsx` (first sheet) or CSV. Phone numbers are stored in one form (`+923001234567`), so donors can sign in with `0300…` or `+92 300…`.
   - Imported sponsors have no password. When one registers on the donor portal with the same phone number, they take over that record (once; logged as `donor.claim`).
 

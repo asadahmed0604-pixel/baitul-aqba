@@ -19,6 +19,7 @@ import { registerBatchRoutes, batchSummary } from './batches.js';
 import { orphanLedger, donorLedger, allLines } from './ledgers.js';
 import { receiptLinks, baseUrl, pictureLoader, ledgerColumns, paymentColumns, forCsv } from './exports.js';
 import { buildXlsx } from './xlsx-writer.js';
+import { isMonthSheet, expandMonthSheet } from './monthsheet.js';
 import { addMonths, monthLabel, normalizeAccount, daysInMonth } from '../public/shared/receipt-parser.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -642,7 +643,8 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
   // Create logins for donors who don't have one (or reset everyone still on an issued password).
   r.post('/api/admin/donors/logins', admin, (ctx) => {
     const resetIssued = ctx.body.scope === 'reset_issued';
-    const ids = db.prepare(`SELECT id FROM users WHERE role = 'donor' AND active = 1 AND (password_hash IS NULL ${resetIssued ? 'OR password_is_default = 1' : ''})`).all().map((x) => x.id);
+    const ids = db.prepare(`SELECT id FROM users WHERE role = 'donor' AND active = 1 AND (password_hash IS NULL ${resetIssued ? 'OR password_is_default = 1' : ''})
+      AND NOT (name = 'Sponsor not recorded' AND phone IS NULL AND email IS NULL)`).all().map((x) => x.id);
     tx(db, () => ids.forEach((id) => issueLogin(db, id)));
     audit(db, ctx.user.id, 'donor.logins_issued', null, null, { count: ids.length, scope: resetIssued ? 'reset_issued' : 'missing' });
     return { count: ids.length };
@@ -824,8 +826,8 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
 
   // Import (CSV or Excel .xlsx). dry_run=1 validates everything and rolls back.
   r.post('/api/admin/import/:kind', admin, (ctx) => {
-    const kind = ctx.params.kind;
-    if (!['orphans', 'donors', 'payments'].includes(kind)) fail(404, 'Unknown import type');
+    let kind = ctx.params.kind;
+    if (!['orphans', 'donors', 'payments', 'monthsheet'].includes(kind)) fail(404, 'Unknown import type');
     const file = ctx.files.file;
     let rows;
     if (file && isXlsx(file.data)) rows = parseXlsx(file.data);
@@ -834,15 +836,34 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
       if (!text) fail(400, 'Choose a CSV or Excel file to import');
       rows = parseCsv(text);
     }
-    rows = rows.map((row) => applyAliases(kind, row));
     if (!rows.length) fail(400, 'The file has no data rows');
     if (rows.length > 5000) fail(400, 'Import at most 5000 rows at a time');
     const dryRun = ['1', 'true', true].includes(ctx.body.dry_run);
     const s = settings();
+    // A sheet with an orphan-code column and month columns (September, October, …) is a monthly payments sheet.
+    if (kind === 'payments' && isMonthSheet(rows)) kind = 'monthsheet';
+    let sheet = null;
+    if (kind === 'monthsheet') {
+      if (!isMonthSheet(rows)) fail(400, 'This is not a monthly payments sheet: it needs an orphan code column and a column per month');
+      sheet = expandMonthSheet(rows, { currentMonth: clock(s).month, sheetName: file?.filename || 'payments sheet' });
+      rows = sheet.specs.map((spec) => Object.defineProperty({ ...spec }, '_row', { value: spec.row }));
+    } else {
+      rows = rows.map((row) => applyAliases(kind, row));
+    }
     const result = {
       kind, dry_run: dryRun, total: rows.length, created: 0, updated: 0, skipped: 0, errors: [], skipped_rows: [],
       donors_created: 0, sponsors_linked: 0, no_sponsor: 0, logins_created: 0,
     };
+    if (sheet) {
+      Object.assign(result, {
+        sheet_rows: new Set(sheet.specs.map((x) => x.row)).size, verified: 0, for_review: 0, amount: 0,
+        orphans_created: [], monthly_amounts_set: 0, unsponsored: [],
+        months: [...new Set(sheet.specs.flatMap((x) => x.months))].sort(),
+      });
+      for (const x of sheet.skipped) { result.skipped++; result.skipped_rows.push(x); }
+    }
+    const sheetDate = String(ctx.body.payment_date || '').trim() || clock(s).today;
+    if (sheet && !/^\d{4}-\d{2}-\d{2}$/.test(sheetDate)) fail(400, 'Payment date must be YYYY-MM-DD');
     const newDonors = new Set();
 
     // Orphan sheets may carry the sponsor on each row: create/find that donor and link them.
@@ -917,6 +938,50 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), uploadsDir = path
         });
         result.created++;
       },
+    };
+    // Monthly payments sheet: each spec is one entry for an orphan code and one or more months.
+    // The sheet has no donor or bank details, so the entry goes to the orphan's linked sponsor
+    // (or a "Sponsor not recorded" placeholder), dated `payment_date`, and needs no receipt.
+    const PLACEHOLDER = 'Sponsor not recorded';
+    handlers.monthsheet = (spec) => {
+      if (db.prepare('SELECT 1 FROM payments WHERE transaction_ref = ?').get(spec.ref)) {
+        result.skipped++;
+        result.skipped_rows.push({ row: spec.row, reason: `${spec.orphan_no} ${spec.months.join(', ')}: already imported (${spec.ref})` });
+        return;
+      }
+      let orphan = db.prepare('SELECT * FROM orphans WHERE orphan_no = ?').get(spec.orphan_no);
+      if (!orphan) {
+        if (!spec.orphan_name) fail(400, `Orphan number ${spec.orphan_no} is not in the system and the sheet has no name for it`);
+        const arabic = /[\u0600-\u06FF]/.test(spec.orphan_name);
+        const x = upsertOrphan({
+          orphan_no: spec.orphan_no, name: spec.orphan_name, name_ar: arabic ? spec.orphan_name : null,
+          notes: `Added from a payments sheet${arabic ? ': add the English name' : ''}`,
+        }, ctx.user.id);
+        orphan = db.prepare('SELECT * FROM orphans WHERE id = ?').get(x.id);
+        result.orphans_created.push(spec.orphan_no);
+      }
+      if (!orphan.monthly_amount && spec.months.length === 1) {
+        db.prepare('UPDATE orphans SET monthly_amount = ? WHERE id = ?').run(spec.amount, orphan.id);
+        result.monthly_amounts_set++;
+      }
+      let donor = db.prepare(`SELECT u.* FROM donor_orphans d JOIN users u ON u.id = d.donor_id
+        WHERE d.orphan_id = ? ORDER BY (u.name = ? AND u.phone IS NULL AND u.email IS NULL), d.donor_id LIMIT 1`).get(orphan.id, PLACEHOLDER);
+      if (!donor) {
+        donor = db.prepare(`SELECT * FROM users WHERE role = 'donor' AND name = ? AND phone IS NULL AND email IS NULL`).get(PLACEHOLDER)
+          || createDonor({ name: PLACEHOLDER }, ctx.user.id, { allowNoLogin: true });
+        if (!result.unsponsored.includes(spec.orphan_no)) result.unsponsored.push(spec.orphan_no);
+      }
+      const status = spec.review.length ? 'pending' : 'verified';
+      createPayment(db, s, uploadsDir, {
+        donorId: donor.id, source: 'import', actorId: ctx.user.id,
+        fields: {
+          orphan_nos: spec.orphan_no, months: spec.months, amount: spec.amount, payment_date: sheetDate,
+          transaction_ref: spec.ref, admin_note: spec.note, status, submitted_on: sheetDate,
+        },
+      });
+      result.created++;
+      result.amount += spec.amount;
+      result[status === 'verified' ? 'verified' : 'for_review']++;
     };
     const handler = handlers[kind];
     if (!handler) fail(404, 'Unknown import type');

@@ -305,12 +305,14 @@ export function updatePayment(db, settings, id, fields, actorId) {
   };
   if (!(next.amount > 0)) fail(400, 'Amount must be greater than zero');
   if (!DATE_RE.test(next.payment_date)) fail(400, 'Invalid date');
+  const donorId = fields.donor_id != null && fields.donor_id !== '' ? Number(fields.donor_id) : p.donor_id;
+  if (donorId !== p.donor_id && !db.prepare(`SELECT 1 FROM users WHERE id = ? AND role = 'donor'`).get(donorId)) fail(400, 'Donor not found');
   const textCols = ['bank_name', 'transaction_ref', 'sender_name', 'beneficiary_name', 'beneficiary_bank', 'admin_note'];
   const acctCols = ['sender_account', 'beneficiary_account'];
 
   return tx(db, () => {
-    const sets = ['amount = ?', 'payment_date = ?'];
-    const vals = [next.amount, next.payment_date];
+    const sets = ['amount = ?', 'payment_date = ?', 'donor_id = ?'];
+    const vals = [next.amount, next.payment_date, donorId];
     for (const c of textCols) if (fields[c] != null) { sets.push(`${c} = ?`); vals.push(str(fields[c], 500)); }
     for (const c of acctCols) if (fields[c] != null) { sets.push(`${c} = ?`); vals.push(normalizeAccount(fields[c])); }
     db.prepare(`UPDATE payments SET ${sets.join(', ')} WHERE id = ?`).run(...vals, id);
@@ -323,7 +325,18 @@ export function updatePayment(db, settings, id, fields, actorId) {
       db.prepare('DELETE FROM payment_months WHERE payment_id = ?').run(id);
       const ins = db.prepare('INSERT INTO payment_months (payment_id, orphan_id, month, amount) VALUES (?, ?, ?, ?)');
       const link = db.prepare('INSERT OR IGNORE INTO donor_orphans (donor_id, orphan_id) VALUES (?, ?)');
-      for (const a of allocations) { ins.run(id, a.orphan.id, a.month, a.amount); link.run(p.donor_id, a.orphan.id); }
+      for (const a of allocations) { ins.run(id, a.orphan.id, a.month, a.amount); link.run(donorId, a.orphan.id); }
+    }
+    if (donorId !== p.donor_id) {
+      // Moved to another donor (e.g. from the "Sponsor not recorded" placeholder): link them to the orphans,
+      // and unlink the previous donor from orphans they no longer have entries for if they have no login.
+      const orphanIds = db.prepare('SELECT DISTINCT orphan_id FROM payment_months WHERE payment_id = ?').all(id).map((x) => x.orphan_id);
+      const prev = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(p.donor_id);
+      for (const oid of orphanIds) {
+        db.prepare('INSERT OR IGNORE INTO donor_orphans (donor_id, orphan_id) VALUES (?, ?)').run(donorId, oid);
+        const still = db.prepare(`SELECT 1 FROM payment_months pm JOIN payments x ON x.id = pm.payment_id WHERE x.donor_id = ? AND pm.orphan_id = ?`).get(p.donor_id, oid);
+        if (prev && !prev.password_hash && !still) db.prepare('DELETE FROM donor_orphans WHERE donor_id = ? AND orphan_id = ?').run(p.donor_id, oid);
+      }
     }
     // Refresh the automatic flags that depend on editable fields.
     const after = getPayment(db, id);

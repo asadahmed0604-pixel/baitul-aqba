@@ -472,3 +472,63 @@ test('batches, ledgers, dashboard and deleting', async () => {
   assert.equal((await adminC.req('DELETE', `/api/admin/orphans/${or2.id}`)).status, 200);
   assert.ok(!(await adminC.get('/api/admin/orphans')).data.orphans.some((o) => o.orphan_no === 'OR002'));
 });
+
+test('imports a monthly payments sheet (orphan code + month columns)', async () => {
+  const name = (m) => new Date(`${m}-15T00:00:00Z`).toLocaleString('en', { month: 'long', timeZone: 'UTC' });
+  const m1 = addMonths(month, 1), m2 = addMonths(month, 2);
+  assert.equal((await adminC.post('/api/admin/orphans', { orphan_no: 'OR077', name: 'Obaida Test' })).status, 200);
+  const sheet = xlsx([
+    ['Assigned Orphan Code', 'Assigned Orphan Name', name(month), 'Onwards', name(m1), name(m2)],
+    ['OR001', 'مرام طارق', '5000', '10000', '5000', '5000'],
+    ['OR077', 'Obaida Test', '4000', '', '', ''],
+    ['SOR900', 'يارا حسن', '3000', '9000', '3000', ''],
+    ['OR004', 'عماد محمد', 'check the batches', '', '', ''],
+    ['', '', '12000', '', '', ''],
+  ]);
+  const send = (dry) => {
+    const fd = new FormData();
+    fd.append('file', new Blob([sheet]), 'Advance.xlsx');
+    fd.append('dry_run', dry ? '1' : '0');
+    fd.append('payment_date', today);
+    // Sent as "entries": the sheet is recognised by its month columns.
+    return adminC.req('POST', '/api/admin/import/payments', undefined, { form: fd });
+  };
+  const dry = await send(true);
+  assert.equal(dry.status, 200, JSON.stringify(dry.data));
+  assert.equal(dry.data.kind, 'monthsheet');
+  assert.deepEqual([dry.data.created, dry.data.verified, dry.data.for_review, dry.data.skipped, dry.data.errors.length], [5, 3, 2, 2, 0]);
+  assert.deepEqual(dry.data.orphans_created, ['SOR900']);
+  assert.deepEqual(dry.data.unsponsored.sort(), ['OR077', 'SOR900']);
+  assert.match(dry.data.skipped_rows.map((x) => x.reason).join(' | '), /OR004: no amounts \(says "check the batches"\)/);
+  const real = await send(false);
+  assert.equal(real.data.created, 5);
+  assert.equal(real.data.amount, 5000 + 10000 + 4000 + 3000 + 3000);
+  // Importing the same sheet again adds nothing.
+  const again = await send(false);
+  assert.deepEqual([again.data.created, again.data.skipped], [0, 7]);
+
+  const { payments } = (await adminC.get('/api/admin/payments?status=&limit=500')).data;
+  const sheetEntries = payments.filter((p) => /^SHEET-/.test(p.transaction_ref));
+  assert.equal(sheetEntries.length, 5);
+  const advance = sheetEntries.find((p) => p.orphan_nos.includes('OR001') && p.months.length === 2);
+  assert.deepEqual([advance.months, advance.amount, advance.status, advance.donor_name], [[m1, m2], 10000, 'verified', 'Shafqat Ara']);
+  const mismatch = sheetEntries.filter((p) => p.orphan_nos.includes('SOR900'));
+  assert.ok(mismatch.every((p) => p.status === 'pending' && /Onwards/.test(p.admin_note)));
+  const or77 = sheetEntries.find((p) => p.orphan_nos.includes('OR077'));
+  assert.equal(or77.donor_name, 'Sponsor not recorded');
+  const sor = (await adminC.get('/api/admin/orphans')).data.orphans.find((o) => o.orphan_no === 'SOR900');
+  assert.deepEqual([sor.name_ar, sor.monthly_amount], ['يارا حسن', 3000]);
+
+  // The placeholder never gets a login, and its entries can be moved to the real sponsor.
+  await adminC.post('/api/admin/donors/logins', {});
+  let donors = (await adminC.get('/api/admin/donors')).data.donors;
+  const placeholder = donors.find((d) => d.name === 'Sponsor not recorded');
+  assert.ok(!placeholder.username || !placeholder.has_password);
+  const shafqat = donors.find((d) => d.name === 'Shafqat Ara');
+  const moved = await adminC.put(`/api/admin/payments/${or77.id}`, { donor_id: shafqat.id });
+  assert.equal(moved.status, 200, JSON.stringify(moved.data));
+  assert.equal(moved.data.payment.donor_name, 'Shafqat Ara');
+  donors = (await adminC.get('/api/admin/donors')).data.donors;
+  assert.match(donors.find((d) => d.id === shafqat.id).orphan_nos, /OR077/);
+  assert.doesNotMatch(donors.find((d) => d.id === placeholder.id).orphan_nos || '', /OR077/);
+});
